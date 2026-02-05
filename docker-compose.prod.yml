@@ -1,0 +1,43 @@
+services:
+  web:
+    image: ${CI_REGISTRY_IMAGE:-registry.example.com/group/project}/web:${IMAGE_TAG:-latest}
+    ports:
+      - "80:80"
+    depends_on:
+      - go
+      - py
+    networks:
+      - appnet
+
+  go:
+    image: ${CI_REGISTRY_IMAGE:-registry.example.com/group/project}/go:${IMAGE_TAG:-latest}
+    environment:
+      - PORT=8080
+      - PY_API_BASE=http://py:8000
+      - CORS_ALLOW_ORIGIN=*
+      - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL}
+      - WECHAT_MCHID=${WECHAT_MCHID:-}
+      - WECHAT_APPID=${WECHAT_APPID:-}
+      - WECHAT_API_V3_KEY=${WECHAT_API_V3_KEY:-}
+    volumes:
+      - ./wechatpay:/app/wechatpay:ro
+      - ./tmp:/app/tmp
+    expose:
+      - "8080"
+    networks:
+      - appnet
+
+  py:
+    image: ${CI_REGISTRY_IMAGE:-registry.example.com/group/project}/py:${IMAGE_TAG:-latest}
+    environment:
+      - PORT=8000
+      - CORS_ALLOW_ORIGINS=*
+    expose:
+      - "8000"
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
+

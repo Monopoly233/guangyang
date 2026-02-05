@@ -1,0 +1,13 @@
+.git
+.DS_Store
+.env
+.env.*
+**/node_modules
+**/dist
+**/__pycache__
+**/.venv
+python/FastAPI/venv
+tmp
+gobackend/tmp
+wechatpay
+
