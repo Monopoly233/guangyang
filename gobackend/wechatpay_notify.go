@@ -1,14 +1,7 @@
 package main
 
 import (
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -62,20 +55,14 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	platformCertPath, err := resolveWechatpayPlatformCertPath()
+	verifier, err := loadWechatpayVerifier()
 	if err != nil {
-		log.Printf("wechatpay notify: platform cert missing: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "FAIL", "message": "server config error"})
-		return
-	}
-	platformCert, err := loadX509CertFromPath(platformCertPath)
-	if err != nil {
-		log.Printf("wechatpay notify: load platform cert error: %v", err)
+		log.Printf("wechatpay notify: platform verifier error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "FAIL", "message": "server config error"})
 		return
 	}
 
-	if err := verifyWechatpayRequestSignature(r.Header, body, platformCert); err != nil {
+	if err := verifier.Verify(r.Header, body); err != nil {
 		log.Printf("wechatpay notify: signature verify failed: %v", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "FAIL", "message": "invalid signature"})
 		return
@@ -148,31 +135,5 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "OK"})
-}
-
-func verifyWechatpayRequestSignature(h http.Header, body []byte, platformCert *x509.Certificate) error {
-	ts := h.Get("Wechatpay-Timestamp")
-	nonce := h.Get("Wechatpay-Nonce")
-	sigB64 := h.Get("Wechatpay-Signature")
-	serial := h.Get("Wechatpay-Serial")
-	if ts == "" || nonce == "" || sigB64 == "" || serial == "" {
-		return errors.New("缺少微信回调验签头")
-	}
-	platformSerial := strings.ToUpper(platformCert.SerialNumber.Text(16))
-	if platformSerial != "" && strings.ToUpper(serial) != platformSerial {
-		return fmt.Errorf("平台证书序列号不匹配: header=%s cert=%s", serial, platformSerial)
-	}
-
-	msg := ts + "\n" + nonce + "\n" + string(body) + "\n"
-	hh := sha256.Sum256([]byte(msg))
-	sig, err := base64.StdEncoding.DecodeString(sigB64)
-	if err != nil {
-		return err
-	}
-	pub, ok := platformCert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return errors.New("平台证书公钥不是 RSA")
-	}
-	return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hh[:], sig)
 }
 

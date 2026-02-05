@@ -38,7 +38,7 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 	}
 
 	mchID := readWechatMchID()
-	appID := readWechatAppID()
+	appID := readWechatPayAppID()
 	notifyURL := readWechatNotifyURL()
 	apiV3Key, err := readWechatAPIV3Key()
 	if err != nil {
@@ -48,7 +48,7 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 		return "", errors.New("缺少 WECHAT_MCHID")
 	}
 	if appID == "" {
-		return "", errors.New("缺少 WECHAT_APPID")
+		return "", errors.New("缺少 WECHAT_PAY_APPID（或兼容读取 WECHAT_APPID）")
 	}
 	if notifyURL == "" {
 		return "", errors.New("缺少 WECHAT_NOTIFY_URL")
@@ -66,9 +66,10 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("加载商户证书失败: %w", err)
 	}
-	platformCert, err := loadX509CertFromPath(platformCertPath)
+	_ = platformCertPath // platform verifier may use cert and/or public key
+	verifier, err := loadWechatpayVerifier()
 	if err != nil {
-		return "", fmt.Errorf("加载平台证书失败: %w", err)
+		return "", err
 	}
 
 	merchantSerial := strings.ToUpper(merchantCert.SerialNumber.Text(16))
@@ -91,14 +92,14 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 
 	// apiV3Key is used for notify decryption; prepay request itself doesn't use it.
 	_ = apiV3Key
-	codeURL, err := wechatpayPostNativePrepay(mchID, merchantSerial, merchantPrivateKey, platformCert, bodyBytes)
+	codeURL, err := wechatpayPostNativePrepay(mchID, merchantSerial, merchantPrivateKey, verifier, bodyBytes)
 	if err != nil {
 		return "", err
 	}
 	return codeURL, nil
 }
 
-func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPrivateKey *rsa.PrivateKey, platformCert *x509.Certificate, body []byte) (string, error) {
+func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPrivateKey *rsa.PrivateKey, verifier *wechatpayVerifier, body []byte) (string, error) {
 	endpoint := "https://api.mch.weixin.qq.com/v3/pay/transactions/native"
 	u, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -135,7 +136,10 @@ func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPrivateKey 
 	}
 
 	// Verify response signature (best-effort; if headers missing, fail closed).
-	if err := verifyWechatpayResponseSignature(resp.Header, respBody, platformCert); err != nil {
+	if verifier == nil {
+		return "", errors.New("平台验签器为空")
+	}
+	if err := verifier.Verify(resp.Header, respBody); err != nil {
 		return "", fmt.Errorf("微信应答验签失败: %w", err)
 	}
 
@@ -160,35 +164,6 @@ func wechatpaySignRequest(priv *rsa.PrivateKey, method, canonicalURL, timestamp,
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(sig), nil
-}
-
-func verifyWechatpayResponseSignature(h http.Header, body []byte, platformCert *x509.Certificate) error {
-	ts := h.Get("Wechatpay-Timestamp")
-	nonce := h.Get("Wechatpay-Nonce")
-	sigB64 := h.Get("Wechatpay-Signature")
-	serial := h.Get("Wechatpay-Serial")
-	if ts == "" || nonce == "" || sigB64 == "" || serial == "" {
-		return errors.New("缺少微信应答验签头")
-	}
-	if platformCert == nil || platformCert.PublicKey == nil {
-		return errors.New("平台证书无效")
-	}
-	platformSerial := strings.ToUpper(platformCert.SerialNumber.Text(16))
-	if platformSerial != "" && strings.ToUpper(serial) != platformSerial {
-		return fmt.Errorf("平台证书序列号不匹配: header=%s cert=%s", serial, platformSerial)
-	}
-
-	msg := ts + "\n" + nonce + "\n" + string(body) + "\n"
-	hh := sha256.Sum256([]byte(msg))
-	sig, err := base64.StdEncoding.DecodeString(sigB64)
-	if err != nil {
-		return err
-	}
-	pub, ok := platformCert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return errors.New("平台证书公钥不是 RSA")
-	}
-	return rsa.VerifyPKCS1v15(pub, crypto.SHA256, hh[:], sig)
 }
 
 func mustNonce() string {
@@ -218,11 +193,15 @@ func resolveWechatpayCertPaths() (merchantKeyPath, merchantCertPath, platformCer
 		{filepath.Join("..", "wechatpay", "cert", "merchant_key.pem"), filepath.Join("..", "wechatpay", "cert", "merchant_cert.pem"), filepath.Join("..", "wechatpay", "cert", "platform_cert.pem")},
 	}
 	for _, c := range candidates {
-		if fileExists(c[0]) && fileExists(c[1]) && fileExists(c[2]) {
-			return c[0], c[1], c[2], nil
+		// platform_cert.pem is optional if you use platform public key mode.
+		if fileExists(c[0]) && fileExists(c[1]) {
+			if fileExists(c[2]) {
+				return c[0], c[1], c[2], nil
+			}
+			return c[0], c[1], "", nil
 		}
 	}
-	return "", "", "", errors.New("缺少证书文件：请在 wechatpay/cert/ 下放置 merchant_key.pem、merchant_cert.pem、platform_cert.pem")
+	return "", "", "", errors.New("缺少商户证书文件：请在 wechatpay/cert/ 下放置 merchant_key.pem、merchant_cert.pem")
 }
 
 func fileExists(p string) bool {

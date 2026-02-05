@@ -53,6 +53,31 @@ func readWechatAppID() string {
 	return ""
 }
 
+// readWechatPayAppID is the appid used in WeChatPay v3 request body.
+// For most scenarios this is the "wx..." appid (公众号/小程序/APP).
+// If your deployment also uses enterprise WeCom corpId ("ww..."), keep it in WECHAT_CORP_ID
+// and set WECHAT_PAY_APPID for payment, otherwise it may be rejected by WeChatPay API.
+func readWechatPayAppID() string {
+	if v := strings.TrimSpace(os.Getenv("WECHAT_PAY_APPID")); v != "" {
+		return v
+	}
+	if v := inferFromApikeyFile("WECHAT_PAY_APPID"); v != "" {
+		return v
+	}
+	// Backward compatible: fall back to WECHAT_APPID.
+	return readWechatAppID()
+}
+
+func readWechatCorpID() string {
+	if v := strings.TrimSpace(os.Getenv("WECHAT_CORP_ID")); v != "" {
+		return v
+	}
+	if v := inferFromApikeyFile("WECHAT_CORP_ID"); v != "" {
+		return v
+	}
+	return ""
+}
+
 func readWechatMchID() string {
 	if v := strings.TrimSpace(os.Getenv("WECHAT_MCHID")); v != "" {
 		return v
@@ -65,6 +90,34 @@ func readWechatMchID() string {
 
 func readWechatNotifyURL() string {
 	return strings.TrimSpace(os.Getenv("WECHAT_NOTIFY_URL"))
+}
+
+// Platform verification config (either platform certificate or platform public key).
+// If you configure platform public key mode, provide:
+// - WECHAT_PLATFORM_PUBLIC_KEY_ID (value like PUB_KEY_ID_...)
+// - WECHAT_PLATFORM_PUBLIC_KEY (PEM content; can be multi-line with \n escaped if needed)
+func readWechatPlatformPublicKeyID() string {
+	if v := strings.TrimSpace(os.Getenv("WECHAT_PLATFORM_PUBLIC_KEY_ID")); v != "" {
+		return v
+	}
+	if v := inferFromApikeyFile("WECHAT_PLATFORM_PUBLIC_KEY_ID"); v != "" {
+		return v
+	}
+	// Backward/legacy: some people store a naked "PUB_KEY_ID_..." line in apikey.txt.
+	if v := inferPubKeyIDFromApikeyFile(); v != "" {
+		return v
+	}
+	return ""
+}
+
+func readWechatPlatformPublicKeyPEM() string {
+	if v := strings.TrimSpace(os.Getenv("WECHAT_PLATFORM_PUBLIC_KEY")); v != "" {
+		return v
+	}
+	if v := inferFromApikeyFile("WECHAT_PLATFORM_PUBLIC_KEY"); v != "" {
+		return v
+	}
+	return ""
 }
 
 func parseKeyFromText(text string, keyName string) string {
@@ -83,6 +136,50 @@ func parseKeyFromText(text string, keyName string) string {
 			rest = strings.TrimSpace(strings.TrimPrefix(rest, "="))
 			rest = strings.TrimSpace(strings.TrimPrefix(rest, ":"))
 			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
+func inferPubKeyIDFromApikeyFile() string {
+	candidates := []string{
+		filepath.Join("wechatpay", "apikey", "apikey.txt"),
+		filepath.Join("..", "wechatpay", "apikey", "apikey.txt"),
+		filepath.Join("wechatpay", "apikey", "key.txt"),
+		filepath.Join("..", "wechatpay", "apikey", "key.txt"),
+	}
+	for _, p := range candidates {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if v := inferPubKeyIDFromText(string(b)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func inferPubKeyIDFromText(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" {
+			continue
+		}
+		// Accept either:
+		// - "WECHAT_PLATFORM_PUBLIC_KEY_ID=PUB_KEY_ID_..."
+		// - "PUB_KEY_ID_..." (naked value)
+		if strings.Contains(l, "PUB_KEY_ID_") {
+			// Extract the token starting from PUB_KEY_ID_
+			idx := strings.Index(l, "PUB_KEY_ID_")
+			if idx >= 0 {
+				token := strings.TrimSpace(l[idx:])
+				// stop at whitespace if any
+				if fields := strings.Fields(token); len(fields) > 0 {
+					return fields[0]
+				}
+				return token
+			}
 		}
 	}
 	return ""
