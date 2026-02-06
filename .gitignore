@@ -21,3 +21,5 @@ wechatpay/cert/
 .env
 .env.*
 
+# env.prod
+env.prod

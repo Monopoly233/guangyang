@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -43,7 +45,21 @@ func loadWechatpayVerifier() (*wechatpayVerifier, error) {
 	}
 
 	if v.platformCert == nil && v.platformPublicKey == nil {
-		return nil, errors.New("缺少平台验签材料：请提供 wechatpay/cert/platform_cert.pem 或配置 WECHAT_PLATFORM_PUBLIC_KEY")
+		// Common confusion: users sometimes put merchant cert as cert.txt.
+		if mch := strings.TrimSpace(readWechatMchID()); mch != "" {
+			certTxt := filepath.Join("wechatpay", "cert", "cert.txt")
+			if st, err := os.Stat(certTxt); err == nil && !st.IsDir() {
+				if c, err2 := loadX509CertFromPath(certTxt); err2 == nil && c != nil {
+					subCN := strings.TrimSpace(c.Subject.CommonName)
+					subO := strings.TrimSpace(strings.Join(c.Subject.Organization, ","))
+					// Merchant cert commonly has CN=<mchid> and O contains "微信商户系统".
+					if subCN == mch || strings.Contains(subO, "微信商户系统") {
+						return nil, errors.New("缺少平台验签材料：你当前提供的 wechatpay/cert/cert.txt 看起来是【商户证书】(不是平台证书)，无法用于验签。请提供 wechatpay/cert/platform_cert.pem 或提供平台公钥：WECHAT_PLATFORM_PUBLIC_KEY（或放置 wechatpay/cert/platform_public_key.pem）")
+					}
+				}
+			}
+		}
+		return nil, errors.New("缺少平台验签材料：请提供 wechatpay/cert/platform_cert.pem，或提供平台公钥 WECHAT_PLATFORM_PUBLIC_KEY（也支持放置 wechatpay/cert/platform_public_key.pem / tmp/wechatpay_cache/cert/platform_public_key.pem）")
 	}
 	return v, nil
 }

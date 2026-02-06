@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -187,21 +186,7 @@ func hexLower(b []byte) string {
 }
 
 func resolveWechatpayCertPaths() (merchantKeyPath, merchantCertPath, platformCertPath string, err error) {
-	// fixed paths (repo root or gobackend/ as cwd)
-	candidates := [][]string{
-		{filepath.Join("wechatpay", "cert", "merchant_key.pem"), filepath.Join("wechatpay", "cert", "merchant_cert.pem"), filepath.Join("wechatpay", "cert", "platform_cert.pem")},
-		{filepath.Join("..", "wechatpay", "cert", "merchant_key.pem"), filepath.Join("..", "wechatpay", "cert", "merchant_cert.pem"), filepath.Join("..", "wechatpay", "cert", "platform_cert.pem")},
-	}
-	for _, c := range candidates {
-		// platform_cert.pem is optional if you use platform public key mode.
-		if fileExists(c[0]) && fileExists(c[1]) {
-			if fileExists(c[2]) {
-				return c[0], c[1], c[2], nil
-			}
-			return c[0], c[1], "", nil
-		}
-	}
-	return "", "", "", errors.New("缺少商户证书文件：请在 wechatpay/cert/ 下放置 merchant_key.pem、merchant_cert.pem")
+	return ensureWechatpayMerchantPemFiles()
 }
 
 func fileExists(p string) bool {

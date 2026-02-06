@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,10 +38,8 @@ func readWechatAPIV3Key() (string, error) {
 		}
 		lastErr = errors.New("WECHAT_API_V3_KEY not found in " + p)
 	}
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", errors.New("missing WECHAT_API_V3_KEY")
+	_ = lastErr
+	return "", fmt.Errorf("缺少 WECHAT_API_V3_KEY：请通过环境变量注入（如 `docker compose --env-file env.prod up -d`），或在 `wechatpay/apikey/apikey.txt` 中写入 `WECHAT_API_V3_KEY=...`")
 }
 
 func readWechatAppID() string {
@@ -116,6 +115,22 @@ func readWechatPlatformPublicKeyPEM() string {
 	}
 	if v := inferFromApikeyFile("WECHAT_PLATFORM_PUBLIC_KEY"); v != "" {
 		return v
+	}
+	// Optional: allow mounting a pem file instead of embedding multi-line env.
+	// Put it at: wechatpay/cert/platform_public_key.pem (or pub_key.pem for convenience)
+	for _, p := range []string{
+		filepath.Join("wechatpay", "cert", "platform_public_key.pem"),
+		filepath.Join("wechatpay", "cert", "pub_key.pem"),
+		filepath.Join("..", "wechatpay", "cert", "platform_public_key.pem"),
+		filepath.Join("..", "wechatpay", "cert", "pub_key.pem"),
+		filepath.Join(wechatpayCertCacheDir(), "platform_public_key.pem"),
+		filepath.Join(wechatpayCertCacheDir(), "pub_key.pem"),
+	} {
+		if b, err := os.ReadFile(p); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
 	}
 	return ""
 }

@@ -1,5 +1,6 @@
 import React from "react";
 import * as XLSX from "xlsx";
+import QRCode from "qrcode";
 import Header from "../../components/common/Header/Header.jsx";
 import "./ComparePage.css";
 import DragUploadArea from "../../components/common/DragUploadArea/DragUploadArea.jsx";
@@ -17,18 +18,24 @@ class ComparePage extends React.Component {
       jobStatus: undefined,
       payAmount: 0.01,
       codeUrl: undefined,
+      qrDataUrl: undefined,
+      qrError: undefined,
       showPayModal: false,
       previewSheets: [], // [{ name, html }]
       lastExport: null, // { blob, filename, url }
     };
     this._pollTimer = null;
+    this._lastQrCodeUrl = null;
+    this._isMounted = false;
   }
 
   async componentDidMount() {
+    this._isMounted = true;
     // 已移除 demo 用户/余额展示，这里不再拉取 profile
   }
 
   componentWillUnmount() {
+    this._isMounted = false;
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
@@ -42,18 +49,42 @@ class ComparePage extends React.Component {
   handleFile1 = (e) => this.setState({ file1: e.target.files[0] || null });
   handleFile2 = (e) => this.setState({ file2: e.target.files[0] || null });
 
+  ensureQr = async (codeUrl) => {
+    const u = (codeUrl || "").trim();
+    if (!u) return;
+    if (u === this._lastQrCodeUrl && this.state.qrDataUrl) return;
+    this._lastQrCodeUrl = u;
+    try {
+      const dataUrl = await QRCode.toDataURL(u, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 240,
+      });
+      if (!this._isMounted) return;
+      this.setState({ qrDataUrl: dataUrl, qrError: undefined });
+    } catch (err) {
+      if (!this._isMounted) return;
+      this.setState({ qrDataUrl: undefined, qrError: err?.message || "生成二维码失败" });
+    }
+  };
+
   startPolling = (jobId) => {
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = setInterval(async () => {
       try {
         const j = await getCompareJob(jobId);
         const status = j?.status;
+        const nextCodeUrl = j?.code_url;
         this.setState({
           jobStatus: status,
-          codeUrl: j?.code_url,
+          codeUrl: nextCodeUrl,
           showPayModal: status === "awaiting_payment",
           payAmount: j?.amount ?? 0.01,
         });
+        if (nextCodeUrl) {
+          // Generate QR lazily when code_url becomes available
+          this.ensureQr(nextCodeUrl);
+        }
 
         if (status === "failed") {
           clearInterval(this._pollTimer);
@@ -212,23 +243,35 @@ class ComparePage extends React.Component {
               <div className="pay-modal">
                 <div className="pay-modal__title">请先完成支付</div>
                 <div className="pay-modal__desc">请使用微信扫一扫支付 {this.state.payAmount} 元，支付成功后会自动返回结果。</div>
-                <div className="pay-modal__code">
-                  <div className="pay-modal__codeLabel">code_url（用于生成二维码）</div>
-                  <pre className="pay-modal__codeValue">{this.state.codeUrl || "(等待后端返回 code_url...)"}</pre>
-                  <div className="pay-modal__actions">
-                    <button
-                      onClick={async (e) => {
-                        e.preventDefault();
-                        if (!this.state.codeUrl) return;
-                        try { await navigator.clipboard.writeText(this.state.codeUrl); } catch (_) {}
-                      }}
-                      disabled={!this.state.codeUrl}
-                    >
-                      复制 code_url
-                    </button>
-                    <button onClick={(e) => { e.preventDefault(); this.setState({ showPayModal: false }); }}>
-                      我已完成支付
-                    </button>
+                <div className="pay-modal__content">
+                  <div className="pay-modal__qrPane">
+                    <div className="pay-modal__codeLabel">二维码</div>
+                    {this.state.qrDataUrl ? (
+                      <img className="pay-modal__qr" src={this.state.qrDataUrl} alt="微信支付二维码" />
+                    ) : (
+                      <div className="pay-modal__qrPlaceholder">
+                        {this.state.codeUrl ? (this.state.qrError ? this.state.qrError : "正在生成二维码...") : "等待后端返回 code_url..."}
+                      </div>
+                    )}
+                  </div>
+                  <div className="pay-modal__codePane">
+                    <div className="pay-modal__codeLabel">code_url（用于生成二维码）</div>
+                    <pre className="pay-modal__codeValue">{this.state.codeUrl || "(等待后端返回 code_url...)"}</pre>
+                    <div className="pay-modal__actions">
+                      <button
+                        onClick={async (e) => {
+                          e.preventDefault();
+                          if (!this.state.codeUrl) return;
+                          try { await navigator.clipboard.writeText(this.state.codeUrl); } catch (_) {}
+                        }}
+                        disabled={!this.state.codeUrl}
+                      >
+                        复制 code_url
+                      </button>
+                      <button onClick={(e) => { e.preventDefault(); this.setState({ showPayModal: false }); }}>
+                        关闭
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
