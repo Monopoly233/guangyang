@@ -9,8 +9,7 @@ services:
       - go
       - py
     networks:
-      - appnet:
-          driver: bridge
+      - appnet
 
   go:
     build:
