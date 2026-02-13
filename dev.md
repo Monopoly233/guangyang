@@ -138,3 +138,4 @@ Go 服务除基础变量外，还支持微信支付相关配置（建议用 `.en
 说明：
 - `-p gy` 固定 compose 项目名，便于和机器上其它 compose 项目隔离
 - 部署机需要已安装 Docker 与 docker compose，并且 runner 对 docker 有权限
+- none
