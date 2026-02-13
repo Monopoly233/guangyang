@@ -235,7 +235,6 @@ class ComparePage extends React.Component {
                   this.setState({ loading: false });
                 }
               }} disabled={this.state.loading}>{this.state.loading ? "处理中..." : "开始比对"}</button>
-              {/* 多个下载按钮：重复下载 */}
               <button onClick={(e) => {
                 e.preventDefault();
                 const le = this.state.lastExport;
@@ -246,18 +245,7 @@ class ComparePage extends React.Component {
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-              }} disabled={!this.state.lastExport}>下载1</button>
-              <button onClick={(e) => {
-                e.preventDefault();
-                const le = this.state.lastExport;
-                if (!le) { this.setState({ error: "请先执行比对并导出" }); return; }
-                const a = document.createElement('a');
-                a.href = le.url;
-                a.download = le.filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-              }} disabled={!this.state.lastExport}>下载2</button>
+              }} disabled={!this.state.lastExport}>下载结果</button>
             </div>
           </form>
           <div className="info-box">

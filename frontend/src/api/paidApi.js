@@ -138,8 +138,10 @@ export async function downloadCompareExport(jobId) {
   }
   const blob = await resp.blob();
   const cd = resp.headers.get("Content-Disposition") || "";
-  const fallback = /filename="?([^\";]+)"?/i.exec(cd);
-  const filename = fallback ? fallback[1] : "comparison_result.xlsx";
+  // 兼容 RFC5987 filename*=UTF-8''... 与普通 filename="..."
+  const match = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const fallback = /filename="([^"]+)"/i.exec(cd) || /filename="?([^\";]+)"?/i.exec(cd);
+  const filename = match ? decodeURIComponent(match[1]) : fallback ? fallback[1] : "比对结果.xlsx";
   return { blob, filename };
 }
 
