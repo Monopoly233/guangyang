@@ -16,7 +16,11 @@ deploy_job:
     - echo "======== [2/4] 注入密钥并启动容器 ========"
     # 这里的变量（如 WECHAT_API_V3_KEY）请确保已在 GitLab 网页端的 Settings -> CI/CD -> Variables 中填好
     # 使用 -p gy 锁定项目组，防止产生重名冲突
-    - docker compose -p gy up -d --build --remove-orphans
+    # 生产环境必须用 docker-compose.prod.yml：
+    # - 证书目录固定从服务器 /opt/app/gy/wechatpay/cert 挂载到容器 /app/wechatpay/cert
+    # - 避免错误地把 runner 工作区的 ./wechatpay 挂进容器导致找不到证书
+    - sudo mkdir -p /opt/app/gy/tmp /opt/app/gy/wechatpay/cert
+    - docker compose -p gy -f docker-compose.prod.yml up -d --build --remove-orphans
     
     - echo "======== [3/4] 验证容器网络 ========"
     # 自动检查网络是否正常，防止出现 py:8000 connection refused
