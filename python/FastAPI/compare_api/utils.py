@@ -4,8 +4,73 @@ import logging
 import traceback
 import math
 from datetime import datetime, date
+import io
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def read_excel_bytes(content: bytes, filename: str = "") -> pd.DataFrame:
+    """
+    兼容读取 .xlsx / .xls：
+    - .xlsx 等：优先 openpyxl
+    - .xls：优先尝试 pandas+xlrd；不行则使用 xlrd 直读（兼容 pandas>=3 移除 xlrd 引擎的情况）
+    """
+    ext = os.path.splitext((filename or "").lower())[1]
+    bio = io.BytesIO(content)
+
+    # xlsx family
+    if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+        return pd.read_excel(bio, engine="openpyxl")
+
+    # legacy xls
+    if ext == ".xls":
+        try:
+            bio.seek(0)
+            return pd.read_excel(bio, engine="xlrd")
+        except Exception:
+            return _read_xls_via_xlrd(content)
+
+    # unknown ext: best effort
+    try:
+        bio.seek(0)
+        return pd.read_excel(bio)
+    except Exception:
+        # 最后兜底：当成 xls 尝试
+        try:
+            return _read_xls_via_xlrd(content)
+        except Exception as e:
+            raise e
+
+
+def _read_xls_via_xlrd(content: bytes) -> pd.DataFrame:
+    import xlrd  # xlrd==1.2.0
+
+    book = xlrd.open_workbook(file_contents=content)
+    if book.nsheets <= 0:
+        return pd.DataFrame()
+    sh = book.sheet_by_index(0)
+    if sh.nrows <= 0:
+        return pd.DataFrame()
+
+    def cvt_cell(cell):
+        try:
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                dt = xlrd.xldate.xldate_as_datetime(cell.value, book.datemode)
+                return dt
+            if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                return bool(cell.value)
+            if cell.ctype == xlrd.XL_CELL_EMPTY or cell.ctype == xlrd.XL_CELL_BLANK:
+                return None
+        except Exception:
+            pass
+        return cell.value
+
+    headers = [str(cvt_cell(sh.cell(0, c))).strip() for c in range(sh.ncols)]
+    rows = []
+    for r in range(1, sh.nrows):
+        rows.append([cvt_cell(sh.cell(r, c)) for c in range(sh.ncols)])
+    return pd.DataFrame(rows, columns=headers)
 
 
 def _normalize_scalar_for_compare(v) -> str:
@@ -81,7 +146,18 @@ def guess_primary_key_column(df: pd.DataFrame, check_rows: int = 5) -> Optional[
             if keyword.lower() in str(col).lower():
                 score += 10
 
-        if values.map(lambda x: isinstance(x, int) or str(x).strip().isalnum()).all():
+        def _pkish(x) -> bool:
+            if isinstance(x, bool):
+                return True
+            if isinstance(x, int):
+                return True
+            if isinstance(x, float):
+                # xls 常见把整数读成 float
+                return math.isfinite(x) and float(x).is_integer()
+            s = str(x).strip()
+            return s.isalnum()
+
+        if values.map(_pkish).all():
             score += 5
 
         candidates.append((col, score))

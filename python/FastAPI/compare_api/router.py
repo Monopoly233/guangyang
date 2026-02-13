@@ -7,7 +7,7 @@ import logging
 import traceback
 from urllib.parse import quote
 
-from .utils import guess_primary_key_column, prepare_table_data, compare_excel_tables, compare_excel_tables_df
+from .utils import guess_primary_key_column, prepare_table_data, compare_excel_tables, compare_excel_tables_df, read_excel_bytes
 import io
 import pandas as pd
 from openpyxl import Workbook
@@ -27,8 +27,11 @@ async def compare_excel(file1: UploadFile = File(...), file2: UploadFile = File(
         content1 = await file1.read()
         content2 = await file2.read()
 
-        df1 = pd.read_excel(io.BytesIO(content1))
-        df2 = pd.read_excel(io.BytesIO(content2))
+        try:
+            df1 = read_excel_bytes(content1, file1.filename or "")
+            df2 = read_excel_bytes(content2, file2.filename or "")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"读取Excel失败: {str(e)}")
 
         onlyid = guess_primary_key_column(df1)
         if not onlyid:
@@ -72,8 +75,11 @@ async def compare_excel_export(file1: UploadFile = File(...), file2: UploadFile 
         content1 = await file1.read()
         content2 = await file2.read()
 
-        df1 = pd.read_excel(io.BytesIO(content1))
-        df2 = pd.read_excel(io.BytesIO(content2))
+        try:
+            df1 = read_excel_bytes(content1, file1.filename or "")
+            df2 = read_excel_bytes(content2, file2.filename or "")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"读取Excel失败: {str(e)}")
 
         onlyid = guess_primary_key_column(df1)
         if not onlyid:
