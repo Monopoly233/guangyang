@@ -34,8 +34,8 @@ services:
       - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
     volumes:
       # 证书/密钥目录建议通过挂载或 secrets 注入
-      - ./wechatpay:/app/wechatpay:ro
-      - ./tmp:/app/tmp
+      - /opt/app/gy/wechatpay/cert:/app/wechatpay/cert:ro
+      - /opt/app/gy/tmp:/app/tmp
     expose:
       - "8080"
     networks:
