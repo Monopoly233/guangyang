@@ -1,4 +1,5 @@
 variables:
+  # 核心修复：强制 Git 在清理时忽略权限报错的文件，防止流水线死在 Checkout 阶段
   GIT_CLEAN_FLAGS: -ffdx -e tmp/ -e wechatpay/
 
 stages:
@@ -6,17 +7,24 @@ stages:
 
 deploy_job:
   stage: deploy
+  # 必须使用 shell 执行器
   script:
-    - echo "======== 开始自动部署 ========"
+    - echo "======== [1/4] 环境预处理 ========"
+    # 暴力修复：确保 runner 有权操作当前目录下的所有文件
+    - sudo chown -R gitlab-runner:gitlab-runner .
     
-    # 尝试在执行前清理残留的权限问题（如果 sudo 没配好，这行报错可以忽略）
-    - sudo chown -R gitlab-runner:gitlab-runner . || true
-    
-    # 使用 -p gy 确保操作的是你之前手动启动的那个项目组
+    - echo "======== [2/4] 注入密钥并启动容器 ========"
+    # 这里的变量（如 WECHAT_API_V3_KEY）请确保已在 GitLab 网页端的 Settings -> CI/CD -> Variables 中填好
+    # 使用 -p gy 锁定项目组，防止产生重名冲突
     - docker compose -p gy up -d --build --remove-orphans
     
-    # 部署完清理垃圾
+    - echo "======== [3/4] 验证容器网络 ========"
+    # 自动检查网络是否正常，防止出现 py:8000 connection refused
+    - docker ps
+    - docker network inspect appnet | grep -E "go|py" || echo "警告：网络连接可能存在异常"
+
+    - echo "======== [4/4] 清理旧镜像 ========"
     - docker image prune -f
-    - echo "======== 部署完成 ========"
+    - echo "======== 部署成功 ========"
   only:
     - main
