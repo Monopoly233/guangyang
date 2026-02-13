@@ -143,4 +143,12 @@ export async function downloadCompareExport(jobId) {
   return { blob, filename };
 }
 
+export async function cancelCompareJob(jobId) {
+  const resp = await fetch(`${GO_API_BASE}/compare/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return handleJSONResponse(resp);
+}
+
 

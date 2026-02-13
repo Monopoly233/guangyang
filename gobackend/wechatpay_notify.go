@@ -117,7 +117,7 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 			j.Paid = true
 			j.PaidAt = &now
 			// 如果结果已生成，则放行；否则等待 worker 完成后再放行
-			if j.ResultPath != "" && (j.Status == CompareJobStatusAwaitingPayment || j.Status == CompareJobStatusProcessing) {
+			if j.ResultPath != "" && (j.Status == CompareJobStatusAwaitingPayment || j.Status == CompareJobStatusProcessing || j.Status == CompareJobStatusCancelled) {
 				j.Status = CompareJobStatusReady
 			}
 		})

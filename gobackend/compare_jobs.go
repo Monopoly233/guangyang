@@ -23,6 +23,7 @@ const (
 	CompareJobStatusAwaitingPayment CompareJobStatus = "awaiting_payment"
 	CompareJobStatusReady           CompareJobStatus = "ready"
 	CompareJobStatusFailed          CompareJobStatus = "failed"
+	CompareJobStatusCancelled       CompareJobStatus = "cancelled"
 )
 
 type CompareJob struct {
@@ -42,6 +43,7 @@ type CompareJob struct {
 	CodeURL    string  `json:"code_url,omitempty"`
 	Paid       bool    `json:"paid"`
 	PaidAt     *time.Time `json:"paidAt,omitempty"`
+	CancelledAt *time.Time `json:"cancelledAt,omitempty"`
 
 	// Diagnostics (non-sensitive)
 	Error string `json:"error,omitempty"`
@@ -173,6 +175,7 @@ func (s *CompareService) handleCreateJob(w http.ResponseWriter, r *http.Request)
 func (s *CompareService) handleJobRoutes(w http.ResponseWriter, r *http.Request) {
 	// /compare/jobs/{jobId}
 	// /compare/jobs/{jobId}/export
+	// /compare/jobs/{jobId}/cancel
 	path := strings.TrimPrefix(r.URL.Path, "/compare/jobs/")
 	path = strings.Trim(path, "/")
 	if path == "" {
@@ -212,6 +215,19 @@ func (s *CompareService) handleJobRoutes(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "cancel" {
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleCancelJob(w, r, jobID)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -235,16 +251,71 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 	if job.Status == CompareJobStatusFailed && job.Error != "" {
 		resp["error"] = job.Error
 	}
+	if job.CancelledAt != nil {
+		resp["cancelledAt"] = job.CancelledAt
+	}
 	if job.PaidAt != nil {
 		resp["paidAt"] = job.PaidAt
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request, jobID string) {
+	job, ok := s.store.get(jobID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Idempotent: already cancelled.
+	if job.Status == CompareJobStatusCancelled {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"jobId":   job.ID,
+			"status":  string(job.Status),
+			"cancelled": true,
+		})
+		return
+	}
+
+	// If already paid/released, don't allow cancel.
+	if job.Paid || job.Status == CompareJobStatusReady {
+		http.Error(w, "订单已支付或已放行，无法取消", http.StatusConflict)
+		return
+	}
+
+	// If we already created a WeChat order, attempt to close it first.
+	if job.Status == CompareJobStatusAwaitingPayment {
+		if err := closeWechatNativeOrder(jobID); err != nil {
+			http.Error(w, "关闭微信订单失败: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+
+	now := time.Now()
+	_, _ = s.store.update(jobID, func(j *CompareJob) {
+		// Don't overwrite if paid concurrently.
+		if j.Paid {
+			return
+		}
+		j.Status = CompareJobStatusCancelled
+		j.CancelledAt = &now
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"jobId":     jobID,
+		"status":    string(CompareJobStatusCancelled),
+		"cancelled": true,
+	})
+}
+
 func (s *CompareService) handleDownloadExport(w http.ResponseWriter, r *http.Request, jobID string) {
 	job, ok := s.store.get(jobID)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if job.Status == CompareJobStatusCancelled {
+		http.Error(w, "订单已取消", http.StatusGone)
 		return
 	}
 	if !job.Paid || job.Status != CompareJobStatusReady || job.ResultPath == "" {
@@ -297,6 +368,9 @@ func (s *CompareService) runCompareTask(jobID string) {
 	if !ok {
 		return
 	}
+	if job.Status == CompareJobStatusCancelled {
+		return
+	}
 	jobDir := filepath.Dir(job.File1Path)
 	if jobDir == "" {
 		jobDir = filepath.Join(s.tmpRoot, "compare_jobs", jobID)
@@ -309,6 +383,11 @@ func (s *CompareService) runCompareTask(jobID string) {
 			j.Status = CompareJobStatusFailed
 			j.Error = err.Error()
 		})
+		return
+	}
+
+	// If cancelled while generating, stop here.
+	if j2, ok := s.store.get(jobID); ok && j2.Status == CompareJobStatusCancelled {
 		return
 	}
 
@@ -333,6 +412,9 @@ func (s *CompareService) runCompareTask(jobID string) {
 	}
 
 	_, _ = s.store.update(jobID, func(j *CompareJob) {
+		if j.Status == CompareJobStatusCancelled || j.Paid {
+			return
+		}
 		j.Status = CompareJobStatusAwaitingPayment
 		j.ResultPath = resultPath
 		j.AmountYuan = 0.01

@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 import Header from "../../components/common/Header/Header.jsx";
 import "./ComparePage.css";
 import DragUploadArea from "../../components/common/DragUploadArea/DragUploadArea.jsx";
-import { createCompareJob, getCompareJob, downloadCompareExport } from "../../api/paidApi.js";
+import { createCompareJob, getCompareJob, downloadCompareExport, cancelCompareJob } from "../../api/paidApi.js";
 
 class ComparePage extends React.Component {
   constructor(props) {
@@ -68,6 +68,31 @@ class ComparePage extends React.Component {
     }
   };
 
+  cancelPayment = async () => {
+    const jobId = this.state.jobId;
+    // Always hide modal immediately for responsiveness.
+    this.setState({ showPayModal: false, error: undefined });
+
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+
+    if (!jobId) {
+      this.setState({ jobStatus: "cancelled", error: "订单已取消" });
+      return;
+    }
+
+    try {
+      await cancelCompareJob(jobId);
+      this.setState({ jobStatus: "cancelled", showPayModal: false, error: "订单已取消" });
+    } catch (err) {
+      // If cancel failed, resume polling to keep UX consistent.
+      this.setState({ error: err?.message || "取消失败，已恢复轮询" });
+      this.startPolling(jobId);
+    }
+  };
+
   startPolling = (jobId) => {
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = setInterval(async () => {
@@ -90,6 +115,13 @@ class ComparePage extends React.Component {
           clearInterval(this._pollTimer);
           this._pollTimer = null;
           this.setState({ loading: false, error: j?.error || "任务失败" });
+          return;
+        }
+
+        if (status === "cancelled") {
+          clearInterval(this._pollTimer);
+          this._pollTimer = null;
+          this.setState({ loading: false, showPayModal: false, error: "订单已取消" });
           return;
         }
 
@@ -268,7 +300,7 @@ class ComparePage extends React.Component {
                       >
                         复制 code_url
                       </button>
-                      <button onClick={(e) => { e.preventDefault(); this.setState({ showPayModal: false }); }}>
+                      <button onClick={(e) => { e.preventDefault(); this.cancelPayment(); }}>
                         关闭
                       </button>
                     </div>
