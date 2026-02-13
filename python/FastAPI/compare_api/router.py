@@ -7,9 +7,11 @@ import logging
 import traceback
 from urllib.parse import quote
 
-from .utils import guess_primary_key_column, prepare_table_data, compare_excel_tables
+from .utils import guess_primary_key_column, prepare_table_data, compare_excel_tables, compare_excel_tables_df
 import io
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 logger = logging.getLogger(__name__)
 
@@ -79,33 +81,41 @@ async def compare_excel_export(file1: UploadFile = File(...), file2: UploadFile 
         if onlyid not in df1.columns or onlyid not in df2.columns:
             raise HTTPException(status_code=400, detail=f'Excel文件中必须同时包含"{onlyid}"列')
 
-        reduced_tbl, increased_tbl, different_tbl = compare_excel_tables(
-            df1, df2, onlyid, file1.filename, file2.filename
+        reduced_df, increased_df, different_df = compare_excel_tables_df(
+            df1=df1,
+            df2=df2,
+            key=onlyid,
+            file1name=file1.filename,
+            file2name=file2.filename,
         )
 
-        # 将表格写入 xlsx（每个结果一个工作表）
+        # 将结果写入 xlsx：固定三张表（增加项/减少项/变动项目）
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            def write_sheet(tbl, name):
-                if tbl and isinstance(tbl, list) and len(tbl) > 1:
-                    headers = tbl[0]
-                    rows = tbl[1:]
-                    df = pd.DataFrame(rows, columns=headers)
-                    df.to_excel(writer, sheet_name=name, index=False)
+        wb = Workbook()
+        ws_inc = wb.active
+        ws_inc.title = "增加项"
+        ws_red = wb.create_sheet("减少项")
+        ws_diff = wb.create_sheet("变动项目")
 
-            write_sheet(reduced_tbl, "减少项")
-            write_sheet(increased_tbl, "增加项")
-            write_sheet(different_tbl, "差异项")
-
-            # 如果没有任何差异数据，为避免空工作簿报错，输出一张提示表
-            has_data = any(
-                tbl and isinstance(tbl, list) and len(tbl) > 1
-                for tbl in (reduced_tbl, increased_tbl, different_tbl)
-            )
-            if not has_data:
-                pd.DataFrame([{"结果": "未发现差异", "提示": "两份文件内容一致"}]).to_excel(
-                    writer, sheet_name="结果", index=False
+        def write_df(ws, df: Optional[pd.DataFrame], empty_msg: str):
+            if df is None or df.empty:
+                ws.append([empty_msg])
+                return
+            # openpyxl 不能直接写入 list/dict 等复杂对象（例如 “不同列” 是 list）
+            dfw = df.copy()
+            for c in dfw.columns:
+                dfw[c] = dfw[c].map(
+                    lambda x: ",".join(map(str, x)) if isinstance(x, (list, tuple, set)) else x
                 )
+
+            for r in dataframe_to_rows(dfw, index=False, header=True):
+                ws.append(r)
+
+        write_df(ws_inc, increased_df, "无增加项")
+        write_df(ws_red, reduced_df, "无减少项")
+        write_df(ws_diff, different_df, "无变动项目")
+
+        wb.save(output)
         output.seek(0)
 
         filename = f"对比结果_{file1.filename}_vs_{file2.filename}.xlsx"
