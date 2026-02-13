@@ -1,29 +1,19 @@
-# 云端 Docker 自动部署（GitLab）
 stages:
   - deploy
 
 deploy_job:
   stage: deploy
-  # 关键点：直接使用宿主机的 shell，不做任何多余的 Docker 嵌套
-  pre_get_sources_script: # 这是一个高级技巧，在拉取代码前运行
-    - sudo chown -R gitlab-runner:gitlab-runner .
-  tags:
-    - deploy   # 如果你刚才注册 Runner 时没填 tag，或者开启了“运行无标签任务”，这行可以删掉
   script:
     - echo "======== 开始自动部署 ========"
-    - echo "清理并启动..."
-    - docker compose -p gy -f docker-compose.prod.yml down -v --remove-orphans
-    # 1. 打印一下当前目录，确保你知道在哪里（通常在 /home/gitlab-runner/builds/...）
-    - pwd
     
-    # 2. 启动服务
-    # 注意：这里假设你的 compose 文件名是 docker-compose.yml
-    # 如果你的文件名是 docker-compose.prod.yml，请把下面改成：docker compose -f docker-compose.prod.yml up -d --build
-    - docker compose -p gy -f docker-compose.prod.yml up -d --build
+    # 尝试在执行前清理残留的权限问题（如果 sudo 没配好，这行报错可以忽略）
+    - sudo chown -R gitlab-runner:gitlab-runner . || true
     
-    # 3. 清理掉构建产生的垃圾镜像（<none>），节省磁盘空间
+    # 使用 -p gy 确保操作的是你之前手动启动的那个项目组
+    - docker compose -p gy up -d --build --remove-orphans
+    
+    # 部署完清理垃圾
     - docker image prune -f
-    
     - echo "======== 部署完成 ========"
   only:
     - main
