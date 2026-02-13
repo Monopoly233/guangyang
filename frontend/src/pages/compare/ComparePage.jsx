@@ -198,6 +198,10 @@ class ComparePage extends React.Component {
         <Header />
         <div className="compare-container">
           <h3>Excel 对比</h3>
+          <div style={{ marginTop: 8, marginBottom: 12, color: "#475569", fontSize: 14, lineHeight: 1.6 }}>
+            <div>请上传两份<strong>类别相同</strong>的 Excel（同一业务/同一字段体系），并且两份表里都包含同一列“编号/编码”等主键列用于匹配。</div>
+            <div>系统会在同一个 <strong>.xlsx</strong> 文件中输出 3 张工作表：<strong>增加项</strong>（只在<strong>第二个</strong> Excel/表B）、<strong>减少项</strong>（只在<strong>第一个</strong> Excel/表A）、<strong>变动项目</strong>（两份表中同一主键但内容有变化）。</div>
+          </div>
           <form>
             <div style={{ marginBottom: 12 }}>
               <DragUploadArea
