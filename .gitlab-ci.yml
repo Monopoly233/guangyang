@@ -12,14 +12,14 @@ deploy_job:
   script:
     - echo "======== 开始自动部署 ========"
     - echo "清理并启动..."
-    - docker compose -p gy down -v --remove-orphans
+    - docker compose -p gy -f docker-compose.prod.yml down -v --remove-orphans
     # 1. 打印一下当前目录，确保你知道在哪里（通常在 /home/gitlab-runner/builds/...）
     - pwd
     
     # 2. 启动服务
     # 注意：这里假设你的 compose 文件名是 docker-compose.yml
     # 如果你的文件名是 docker-compose.prod.yml，请把下面改成：docker compose -f docker-compose.prod.yml up -d --build
-    - docker compose -f docker-compose.prod.yml up -d --build
+    - docker compose -p gy -f docker-compose.prod.yml up -d --build
     
     # 3. 清理掉构建产生的垃圾镜像（<none>），节省磁盘空间
     - docker image prune -f
