@@ -16,7 +16,7 @@ class ComparePage extends React.Component {
       error: undefined,
       jobId: undefined,
       jobStatus: undefined,
-      payAmount: 0.01,
+      payAmount: 0,
       codeUrl: undefined,
       qrDataUrl: undefined,
       qrError: undefined,
@@ -104,7 +104,7 @@ class ComparePage extends React.Component {
           jobStatus: status,
           codeUrl: nextCodeUrl,
           showPayModal: status === "awaiting_payment",
-          payAmount: j?.amount ?? 0.01,
+          payAmount: j?.amount ?? 0,
         });
         if (nextCodeUrl) {
           // Generate QR lazily when code_url becomes available
@@ -253,7 +253,7 @@ class ComparePage extends React.Component {
             </div>
           </form>
           <div className="info-box">
-            <div style={{ fontWeight: 600 }}>当前收费：0.01 元/次</div>
+            <div style={{ fontWeight: 600 }}>当前收费：0 元/次</div>
             {this.state.jobId ? (
               <div style={{ marginTop: 6, color: "#334155" }}>
                 Job：{this.state.jobId}（状态：{this.state.jobStatus || "unknown"}）

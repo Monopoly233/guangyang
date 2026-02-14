@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -100,11 +101,17 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 金额校验：本项目测试固定 0.01 元 (=1 分)
-	if tx.Amount.Total != 1 {
-		log.Printf("wechatpay notify: amount mismatch out_trade_no=%s total=%d", jobID, tx.Amount.Total)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "FAIL", "message": "amount mismatch"})
-		return
+	// 金额校验：以 job 上记录的 amount 为准（单位：分）。若未记录则回退为 1 分（兼容旧逻辑/竞态）。
+	if job, ok := s.store.get(jobID); ok {
+		expectedFen := int64(math.Round(job.AmountYuan * 100))
+		if expectedFen <= 0 {
+			expectedFen = 1
+		}
+		if tx.Amount.Total != expectedFen {
+			log.Printf("wechatpay notify: amount mismatch out_trade_no=%s expected=%d total=%d", jobID, expectedFen, tx.Amount.Total)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "FAIL", "message": "amount mismatch"})
+			return
+		}
 	}
 
 	update := func() {

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +41,7 @@ type CompareJob struct {
 	ResultPath string `json:"-"`
 
 	// Payment gating
-	AmountYuan float64 `json:"amount,omitempty"` // 0.01
+	AmountYuan float64 `json:"amount,omitempty"` // 单位：元（AwaitingPayment 时返回给前端展示）
 	CodeURL    string  `json:"code_url,omitempty"`
 	Paid       bool    `json:"paid"`
 	PaidAt     *time.Time `json:"paidAt,omitempty"`
@@ -97,6 +98,21 @@ func newCompareService(store *CompareJobStore, queue *InMemoryQueue, tmpRoot, py
 		tmpRoot:   tmpRoot,
 		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
 	}
+}
+
+// compareJobFeeFen returns fee in "fen" (1 yuan = 100 fen).
+// Default is 0 (free) to allow "支付 0 元" without creating a WeChat order.
+// You can override by setting env COMPARE_JOB_FEE_FEN (non-negative integer).
+func compareJobFeeFen() int64 {
+	raw := strings.TrimSpace(os.Getenv("COMPARE_JOB_FEE_FEN"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (s *CompareService) registerRoutes(mux *http.ServeMux) {
@@ -404,8 +420,28 @@ func (s *CompareService) runCompareTask(jobID string) {
 		return
 	}
 
-	// 2) Create Native payment (0.01 yuan = 1 fen) and gate result
-	codeURL, err := createWechatNativeOrder(jobID, 1)
+	feeFen := compareJobFeeFen()
+	if feeFen <= 0 {
+		// Free: no WeChat order, directly mark paid and release result.
+		now := time.Now()
+		_, _ = s.store.update(jobID, func(j *CompareJob) {
+			if j.Status == CompareJobStatusCancelled {
+				return
+			}
+			if !j.Paid {
+				j.Paid = true
+				j.PaidAt = &now
+			}
+			j.Status = CompareJobStatusReady
+			j.ResultPath = resultPath
+			j.AmountYuan = 0
+			j.CodeURL = ""
+		})
+		return
+	}
+
+	// 2) Create Native payment (feeFen) and gate result
+	codeURL, err := createWechatNativeOrder(jobID, feeFen)
 	if err != nil {
 		_, _ = s.store.update(jobID, func(j *CompareJob) {
 			j.Status = CompareJobStatusFailed
@@ -421,7 +457,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 		}
 		j.Status = CompareJobStatusAwaitingPayment
 		j.ResultPath = resultPath
-		j.AmountYuan = 0.01
+		j.AmountYuan = float64(feeFen) / 100.0
 		j.CodeURL = codeURL
 	})
 }
