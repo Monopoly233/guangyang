@@ -29,9 +29,9 @@ const (
 )
 
 type CompareJob struct {
-	ID        string          `json:"jobId"`
+	ID        string           `json:"jobId"`
 	Status    CompareJobStatus `json:"status"`
-	CreatedAt time.Time       `json:"createdAt"`
+	CreatedAt time.Time        `json:"createdAt"`
 
 	// Inputs (saved on disk)
 	File1Path string `json:"-"`
@@ -41,10 +41,10 @@ type CompareJob struct {
 	ResultPath string `json:"-"`
 
 	// Payment gating
-	AmountYuan float64 `json:"amount,omitempty"` // 单位：元（AwaitingPayment 时返回给前端展示）
-	CodeURL    string  `json:"code_url,omitempty"`
-	Paid       bool    `json:"paid"`
-	PaidAt     *time.Time `json:"paidAt,omitempty"`
+	AmountYuan  float64    `json:"amount,omitempty"` // 单位：元（AwaitingPayment 时返回给前端展示）
+	CodeURL     string     `json:"code_url,omitempty"`
+	Paid        bool       `json:"paid"`
+	PaidAt      *time.Time `json:"paidAt,omitempty"`
 	CancelledAt *time.Time `json:"cancelledAt,omitempty"`
 
 	// Diagnostics (non-sensitive)
@@ -287,8 +287,8 @@ func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request,
 	// Idempotent: already cancelled.
 	if job.Status == CompareJobStatusCancelled {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"jobId":   job.ID,
-			"status":  string(job.Status),
+			"jobId":     job.ID,
+			"status":    string(job.Status),
 			"cancelled": true,
 		})
 		return
@@ -543,4 +543,3 @@ func addFilePart(w *multipart.Writer, fieldName, filename string, r io.Reader) e
 	}
 	return nil
 }
-
