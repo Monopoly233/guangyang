@@ -23,6 +23,44 @@ stages:
   - build_push
   - deploy
 
+# 手动：只构建/推送 xlsconvert（用于紧急修复转换服务，不影响其它服务）
+acr_build_push_xlsconvert_manual:
+  stage: build_push
+  script:
+    - set -euo pipefail
+    - test -n "${ACR_REGISTRY:-}"
+    - test -n "${ACR_NAMESPACE:-}"
+    - test -n "${ACR_USERNAME:-}"
+    - test -n "${ACR_PASSWORD:-}"
+    - echo "$ACR_PASSWORD" | docker login --username "$ACR_USERNAME" --password-stdin "$ACR_REGISTRY"
+    - docker build --pull -t "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" -f gobackend/cmd/xlsconvert/Dockerfile gobackend
+    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG"
+    - |
+      docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
+      docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
+  rules:
+    - when: manual
+
+# 手动：只部署 xlsconvert（需要你配置 KUBECONFIG_B64）
+deploy_ack_xlsconvert_manual:
+  stage: deploy
+  needs: ["acr_build_push_xlsconvert_manual"]
+  script:
+    - set -euo pipefail
+    - test -n "${KUBECONFIG_B64:-}"
+    - mkdir -p "$HOME/.kube"
+    - echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+    - chmod 600 "$HOME/.kube/config"
+    - export KUBECONFIG="$HOME/.kube/config"
+    - command -v kubectl >/dev/null 2>&1
+    - kubectl apply -f k8s/11-xlsconvert.yaml
+    - |
+      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      kubectl -n gy set image deploy/xlsconvert xlsconvert="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG"
+    - kubectl -n gy rollout status deploy/xlsconvert --timeout=300s
+  rules:
+    - when: manual
+
 acr_build_push:
   stage: build_push
   # shell 执行器（宿主机需已安装 docker）
@@ -43,11 +81,13 @@ acr_build_push:
 
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
+    - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" -f gobackend/cmd/xlsconvert/Dockerfile gobackend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" -f python/FastAPI/Dockerfile python/FastAPI
 
     - echo "======== [3/3] 推送镜像 ========"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
+    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
 
     # main 分支额外推送 latest，方便 ACK 先用 latest 跑通
@@ -55,9 +95,11 @@ acr_build_push:
       if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
+        docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
+        docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
       fi
   rules:
@@ -117,6 +159,7 @@ deploy_ack:
       test -n "${IMAGE_TAG:-}"
       ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
+      kubectl -n gy set image deploy/xlsconvert xlsconvert="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" >/dev/null 2>&1 || true
       kubectl -n gy set image deploy/python python="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
       kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
 

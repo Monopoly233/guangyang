@@ -13,25 +13,10 @@ RUN go mod download
 COPY . .
 RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 
-# Runtime: LibreOffice for .xls conversion
-# Use full bookworm image to avoid outdated keyring issues on some runners.
-FROM debian:bookworm
+# Runtime: LibreOffice listener prebuilt (avoid apt/GPG issues)
+FROM ghcr.io/unoconv/unoserver-docker:latest
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      debian-archive-keyring \
-      ca-certificates \
-      python3 \
-      python3-uno \
-      unoconv \
-      libreoffice-calc \
-      libreoffice-core \
-      libreoffice-common \
-      fontconfig \
-      fonts-dejavu-core \
-    && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8090
 ENV PORT=8090
