@@ -19,7 +19,14 @@ WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
+# Use Aliyun Debian mirrors for faster/stabler installs in CN
+RUN sed -i \
+      -e 's@http://deb.debian.org/debian@http://mirrors.aliyun.com/debian@g' \
+      -e 's@https://deb.debian.org/debian@http://mirrors.aliyun.com/debian@g' \
+      -e 's@http://security.debian.org/debian-security@http://mirrors.aliyun.com/debian-security@g' \
+      -e 's@https://security.debian.org/debian-security@http://mirrors.aliyun.com/debian-security@g' \
+      /etc/apt/sources.list && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       python3 \
