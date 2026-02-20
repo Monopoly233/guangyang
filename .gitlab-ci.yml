@@ -6,7 +6,13 @@ variables:
   # 在 GitLab 项目 Settings -> CI/CD -> Variables 里配置：
   # - ACR_USERNAME / ACR_PASSWORD
   # 可按需覆盖 ACR_NAMESPACE / IMAGE_TAG
-  ACR_REGISTRY: guangyang-registry.cn-heyuan.cr.aliyuncs.com
+  # 说明：
+  # - 如果你没有在 ACR 控制台开启“公网入口”，公网域名可能无法解析（no such host）。
+  # - 你的 GitLab Runner/ACK 都在同一 VPC 时，优先用 vpc 内网域名（无需公网入口）：
+  #   guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com
+  # - 若你已开启公网入口并放行白名单，也可改回公网域名：
+  #   guangyang-registry.cn-heyuan.cr.aliyuncs.com
+  ACR_REGISTRY: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com
   ACR_NAMESPACE: guangyang
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
 
