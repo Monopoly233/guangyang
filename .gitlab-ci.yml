@@ -130,10 +130,15 @@ deploy_ack:
       # 平台验签材料二选一：
       # - WECHAT_PLATFORM_PUBLIC_KEY_B64（推荐，base64 后的 PEM 公钥） + 可选 WECHAT_PLATFORM_PUBLIC_KEY_ID
       # - 或直接提供 WECHAT_PLATFORM_PUBLIC_KEY（建议用 GitLab 的 File 变量类型，或用 \n 转义保留换行）
+      # - 兼容别名：WECHAT_PLATFORM_PUBLIC_KEY_PEM（同上，内容为 PEM 或 File 变量路径）
       # - 或通过 wechatpay-cert secret 提供 platform_cert.pem
       if [ -n "${WECHAT_NOTIFY_URL:-}" ] && [ -n "${WECHAT_MCHID:-}" ] && [ -n "${WECHAT_PAY_APPID:-}" ] && [ -n "${WECHAT_API_V3_KEY:-}" ]; then
         tmpdir="$(mktemp -d)"
         extra=()
+        # 兼容：用户用 WECHAT_PLATFORM_PUBLIC_KEY_PEM 作为变量名
+        if [ -z "${WECHAT_PLATFORM_PUBLIC_KEY:-}" ] && [ -n "${WECHAT_PLATFORM_PUBLIC_KEY_PEM:-}" ]; then
+          WECHAT_PLATFORM_PUBLIC_KEY="$WECHAT_PLATFORM_PUBLIC_KEY_PEM"
+        fi
         if [ -n "${WECHAT_PLATFORM_PUBLIC_KEY_B64:-}" ]; then
           echo "$WECHAT_PLATFORM_PUBLIC_KEY_B64" | base64 -d > "$tmpdir/platform_public_key.pem"
           # 必须是完整 PEM（需要 BEGIN+END），否则 Go 端 pem.Decode 会失败
@@ -178,6 +183,9 @@ deploy_ack:
           fi
           extra+=(--from-file="WECHAT_PLATFORM_PUBLIC_KEY=$tmpdir/platform_public_key.pem")
         fi
+        # kubectl apply 对 Secret.data 是 merge 语义，可能导致旧的坏 key 残留。
+        # 这里先删除再创建，确保 wechatpay-env 的键集合完全由本次变量决定。
+        kubectl -n gy delete secret wechatpay-env --ignore-not-found >/dev/null 2>&1 || true
         kubectl -n gy create secret generic wechatpay-env \
           --from-literal="WECHAT_NOTIFY_URL=$WECHAT_NOTIFY_URL" \
           --from-literal="WECHAT_MCHID=$WECHAT_MCHID" \
