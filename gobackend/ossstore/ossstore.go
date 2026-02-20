@@ -66,6 +66,10 @@ func NewFromEnv() (*Store, bool, error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("init alibaba credentials failed: %w", err)
 	}
+	// 尽早校验一次，避免后续 PutObject 以“匿名请求”形式打到 OSS，导致 403 bucket acl 这种误导性错误。
+	if err := validateAlibabaCredential(cred); err != nil {
+		return nil, true, err
+	}
 
 	provider := &credentialsProvider{cred: cred}
 
@@ -94,6 +98,20 @@ func NewFromEnv() (*Store, bool, error) {
 		prefix:       prefix,
 		signExpiry:   time.Duration(expirySec) * time.Second,
 	}, true, nil
+}
+
+func validateAlibabaCredential(cred credentials.Credential) error {
+	if cred == nil {
+		return errors.New("阿里云凭证未初始化（RRSA/AK/STS 都不可用）")
+	}
+	c, err := cred.GetCredential()
+	if err != nil {
+		return fmt.Errorf("获取阿里云临时凭证失败（检查 RRSA 是否注入）：%w", err)
+	}
+	if c == nil || c.AccessKeyId == nil || c.AccessKeySecret == nil || strings.TrimSpace(*c.AccessKeyId) == "" || strings.TrimSpace(*c.AccessKeySecret) == "" {
+		return errors.New("阿里云凭证为空：很可能 RRSA 未注入。请检查 Pod 内是否存在 ALIBABA_CLOUD_ROLE_ARN / ALIBABA_CLOUD_OIDC_PROVIDER_ARN / ALIBABA_CLOUD_OIDC_TOKEN_FILE")
+	}
+	return nil
 }
 
 func newOSSClient(endpoint, region string, provider oss.CredentialsProvider) (*oss.Client, error) {
