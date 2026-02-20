@@ -111,7 +111,14 @@ func readWechatPlatformPublicKeyID() string {
 
 func readWechatPlatformPublicKeyPEM() string {
 	if v := strings.TrimSpace(os.Getenv("WECHAT_PLATFORM_PUBLIC_KEY")); v != "" {
-		return v
+		// Guardrail: if the env exists but is clearly malformed/truncated (e.g. only BEGIN/END lines),
+		// do not block file-based injection via wechatpay/cert/pub_key.pem.
+		// A real RSA public key PEM is typically hundreds of bytes.
+		if len(v) < 200 && strings.Contains(v, "BEGIN PUBLIC KEY") && strings.Contains(v, "END PUBLIC KEY") {
+			// fall through to file-based lookup
+		} else {
+			return v
+		}
 	}
 	if v := inferFromApikeyFile("WECHAT_PLATFORM_PUBLIC_KEY"); v != "" {
 		return v
