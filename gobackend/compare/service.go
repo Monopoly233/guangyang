@@ -349,19 +349,22 @@ func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, j
 	}
 	// Prefer OSS signed URL when available (cross-pod safe).
 	if job.ResultOSSKey != "" && s.oss != nil && s.oss.Enabled() {
-		// 兼容前端 fetch(blob) + 预览：这里不要 302 跳转，否则会触发跨域 + CORS。
-		// 直接由 Go 侧从 OSS 拉取并转发给浏览器。
-		rc, err := s.oss.GetObject(job.ResultOSSKey)
+		signed, err := s.oss.SignDownloadURL(job.ResultOSSKey, "比对结果.xlsx")
 		if err != nil {
-			http.Error(w, "从 OSS 获取结果失败", http.StatusBadGateway)
+			http.Error(w, "生成下载链接失败", http.StatusBadGateway)
 			return
 		}
-		defer rc.Close()
-		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-		utf8Name := "比对结果.xlsx"
-		escaped := url.PathEscape(utf8Name)
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", "compare.xlsx", escaped))
-		_, _ = io.Copy(w, rc)
+		// 支持两种响应：
+		// - format=json：返回 {url, filename} 让前端自行 fetch(预览)/跳转(下载)
+		// - 默认：302 重定向到 OSS 签名链接（适合纯下载）
+		if wantsJSON(r) {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"url":      signed,
+				"filename": "比对结果.xlsx",
+			})
+			return
+		}
+		http.Redirect(w, r, signed, http.StatusFound)
 		return
 	}
 
@@ -380,6 +383,18 @@ func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, j
 	escaped := url.PathEscape(utf8Name)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", "compare.xlsx", escaped))
 	http.ServeFile(w, r, job.ResultPath)
+}
+
+func wantsJSON(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	q := r.URL.Query()
+	if strings.EqualFold(strings.TrimSpace(q.Get("format")), "json") {
+		return true
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "application/json")
 }
 
 func newJobID() string {

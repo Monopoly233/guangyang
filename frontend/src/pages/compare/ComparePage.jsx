@@ -141,7 +141,7 @@ class ComparePage extends React.Component {
   fetchAndPreview = async (jobId) => {
     this.setState({ loading: true, error: undefined });
     try {
-      const { blob, filename } = await downloadCompareExport(jobId);
+      const { blob, filename, directUrl } = await downloadCompareExport(jobId);
       const ab = await blob.arrayBuffer();
       const wb = XLSX.read(ab, { type: "array" });
       const previewSheets = wb.SheetNames.map((name) => {
@@ -154,7 +154,7 @@ class ComparePage extends React.Component {
       if (prev && prev.url) URL.revokeObjectURL(prev.url);
 
       const url = URL.createObjectURL(blob);
-      this.setState({ previewSheets, lastExport: { blob, filename: filename || "comparison_result.xlsx", url } });
+      this.setState({ previewSheets, lastExport: { blob, filename: filename || "comparison_result.xlsx", url, directUrl } });
     } finally {
       this.setState({ loading: false });
     }
@@ -243,9 +243,14 @@ class ComparePage extends React.Component {
                 e.preventDefault();
                 const le = this.state.lastExport;
                 if (!le) { this.setState({ error: "请先执行比对并导出" }); return; }
+                // Prefer OSS direct URL for large downloads; fallback to in-memory blob url.
+                const href = (le.directUrl || le.url || "").trim();
+                if (!href) { this.setState({ error: "下载链接不存在" }); return; }
                 const a = document.createElement('a');
-                a.href = le.url;
-                a.download = le.filename;
+                a.href = href;
+                a.rel = "noopener";
+                // cross-origin download attribute may be ignored by browsers; OSS response headers will control filename.
+                a.download = le.filename || "比对结果.xlsx";
                 document.body.appendChild(a);
                 a.click();
                 a.remove();

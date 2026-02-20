@@ -128,21 +128,27 @@ export async function getCompareJob(jobId) {
 }
 
 export async function downloadCompareExport(jobId) {
-  const resp = await fetch(`${GO_API_BASE}/compare/jobs/${encodeURIComponent(jobId)}/export`, {
+  // Prefer OSS direct download: ask backend for a signed URL (JSON)
+  const metaResp = await fetch(`${GO_API_BASE}/compare/jobs/${encodeURIComponent(jobId)}/export?format=json`, {
     method: "GET",
     credentials: "include",
+    headers: { Accept: "application/json" },
   });
+  const meta = await handleJSONResponse(metaResp);
+  const directUrl = (meta?.url || "").trim();
+  const filename = meta?.filename || "比对结果.xlsx";
+  if (!directUrl) {
+    throw new Error("未获取到下载链接");
+  }
+
+  // Fetch from OSS directly (no credentials/cookies)
+  const resp = await fetch(directUrl, { method: "GET", mode: "cors" });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(text || resp.statusText || "下载失败");
   }
   const blob = await resp.blob();
-  const cd = resp.headers.get("Content-Disposition") || "";
-  // 兼容 RFC5987 filename*=UTF-8''... 与普通 filename="..."
-  const match = /filename\*=UTF-8''([^;]+)/i.exec(cd);
-  const fallback = /filename="([^"]+)"/i.exec(cd) || /filename="?([^\";]+)"?/i.exec(cd);
-  const filename = match ? decodeURIComponent(match[1]) : fallback ? fallback[1] : "比对结果.xlsx";
-  return { blob, filename };
+  return { blob, filename, directUrl };
 }
 
 export async function cancelCompareJob(jobId) {
