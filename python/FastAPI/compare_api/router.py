@@ -5,6 +5,8 @@ import pandas as pd
 import io
 import logging
 import traceback
+import os
+import asyncio
 from urllib.parse import quote
 
 from starlette.concurrency import run_in_threadpool
@@ -16,6 +18,9 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="", tags=["compare"])
+
+_MAX_CONCURRENCY = int(os.getenv("COMPARE_MAX_CONCURRENCY", "2") or "2")
+_COMPARE_SEM = asyncio.Semaphore(max(1, _MAX_CONCURRENCY))
 
 def _compare_json_impl(content1: bytes, content2: bytes, file1name: str, file2name: str):
     try:
@@ -75,9 +80,8 @@ def _compare_export_bytes_impl(content1: bytes, content2: bytes, file1name: str,
 
     # 将结果写入 xlsx：固定三张表（增加项/减少项/变动项目）
     output = io.BytesIO()
-    wb = Workbook()
-    ws_inc = wb.active
-    ws_inc.title = "增加项"
+    wb = Workbook(write_only=True)
+    ws_inc = wb.create_sheet("增加项")
     ws_red = wb.create_sheet("减少项")
     ws_diff = wb.create_sheet("变动项目")
 
@@ -112,7 +116,8 @@ async def compare_excel(file1: UploadFile = File(...), file2: UploadFile = File(
         content1 = await file1.read()
         content2 = await file2.read()
 
-        return await run_in_threadpool(_compare_json_impl, content1, content2, file1.filename or "", file2.filename or "")
+        async with _COMPARE_SEM:
+            return await run_in_threadpool(_compare_json_impl, content1, content2, file1.filename or "", file2.filename or "")
     except HTTPException:
         raise
     except Exception:
@@ -128,13 +133,14 @@ async def compare_excel_export(file1: UploadFile = File(...), file2: UploadFile 
         content1 = await file1.read()
         content2 = await file2.read()
 
-        out_bytes = await run_in_threadpool(
-            _compare_export_bytes_impl,
-            content1,
-            content2,
-            file1.filename or "",
-            file2.filename or "",
-        )
+        async with _COMPARE_SEM:
+            out_bytes = await run_in_threadpool(
+                _compare_export_bytes_impl,
+                content1,
+                content2,
+                file1.filename or "",
+                file2.filename or "",
+            )
         output = io.BytesIO(out_bytes)
         filename = f"对比结果_{file1.filename}_vs_{file2.filename}.xlsx"
         encoded_name = quote(filename)

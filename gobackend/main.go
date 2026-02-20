@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -120,8 +121,10 @@ func main() {
 	// Compare jobs (pay-gated export)
 	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
 	pyBase := readEnvDefault("PY_API_BASE", "http://localhost:8000")
-	q := queue.NewInMemoryQueue(256)
-	q.Start(2)
+	qBuf := readEnvIntDefault("COMPARE_QUEUE_BUFFER", 256)
+	qWorkers := readEnvIntDefault("COMPARE_QUEUE_WORKERS", 2)
+	q := queue.NewInMemoryQueue(qBuf)
+	q.Start(qWorkers)
 	var jobStore store.CompareJobStore = store.NewInMemoryCompareJobStore()
 	if redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); redisAddr != "" {
 		rs, err := store.NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
@@ -248,6 +251,18 @@ func readEnvDefault(key, defaultVal string) string {
 		return defaultVal
 	}
 	return val
+}
+
+func readEnvIntDefault(key string, defaultVal int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	return n
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

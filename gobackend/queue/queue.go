@@ -51,10 +51,11 @@ func (q *InMemoryQueue) Enqueue(fn func()) {
 		return
 	default:
 	}
+	// Do not drop tasks silently; block until queued or closed.
 	select {
 	case q.ch <- fn:
-	default:
-		// Drop on full (MVP). In production you'd block or persist.
+	case <-q.closed:
+		return
 	}
 }
 

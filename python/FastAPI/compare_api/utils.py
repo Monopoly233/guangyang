@@ -275,24 +275,50 @@ def compare_excel_tables_df(
     a = a.reindex(columns=all_cols)
     b = b.reindex(columns=all_cols)
 
-    # 归一化后比较（避免空值/数字格式导致误判）
-    a_cmp = a.apply(lambda s: s.map(_normalize_scalar_for_compare))
-    b_cmp = b.apply(lambda s: s.map(_normalize_scalar_for_compare))
+    # 先用“快速比较”筛出疑似不同的行，避免对整个表逐单元格做 Python 归一化（非常慢）。
+    # 注意：NaN != NaN 的问题需要当成相等处理。
+    try:
+        diff_fast = a.ne(b)
+        both_na = a.isna() & b.isna()
+        diff_fast = diff_fast & (~both_na)
+        cand_rows = diff_fast.any(axis=1)
+    except Exception:
+        # 兜底：如果遇到不可比对象导致向量化比较失败，就退回全量严格比较。
+        cand_rows = pd.Series(True, index=a.index)
+
+    if not cand_rows.any():
+        return reduced_df, increased_df, None
+
+    a_sub = a.loc[cand_rows]
+    b_sub = b.loc[cand_rows]
+
+    # 对“疑似不同”的行再做严格归一化比较（避免空值/数字格式导致误判）
+    a_cmp = a_sub.apply(lambda s: s.map(_normalize_scalar_for_compare))
+    b_cmp = b_sub.apply(lambda s: s.map(_normalize_scalar_for_compare))
     diff_mask = a_cmp.ne(b_cmp)
     rows_with_diff = diff_mask.any(axis=1)
     if not rows_with_diff.any():
         return reduced_df, increased_df, None
 
-    different_cols_series = diff_mask[rows_with_diff].apply(
-        lambda r: list(r.index[r.values]),
-        axis=1,
-    )
+    diff_rows = diff_mask.loc[rows_with_diff]
 
-    left_diff = a.loc[rows_with_diff].reset_index()
+    # 生成“不同列”列表：用 numpy 一次性聚合，避免逐行 apply(axis=1) 的 Python 循环开销。
+    import numpy as np  # pandas 依赖 numpy，这里按需导入
+
+    arr = diff_rows.to_numpy()
+    col_names = list(diff_rows.columns)
+    row_keys = list(diff_rows.index)
+    rpos, cpos = np.where(arr)
+    buckets = {k: [] for k in row_keys}
+    for i, j in zip(rpos.tolist(), cpos.tolist()):
+        buckets[row_keys[i]].append(col_names[j])
+    different_cols_series = pd.Series(buckets)
+
+    left_diff = a_sub.loc[rows_with_diff].reset_index()
     left_diff["文件来源"] = file1name
     left_diff["不同列"] = left_diff[key].map(different_cols_series)
 
-    right_diff = b.loc[rows_with_diff].reset_index()
+    right_diff = b_sub.loc[rows_with_diff].reset_index()
     right_diff["文件来源"] = file2name
     right_diff["不同列"] = right_diff[key].map(different_cols_series)
 

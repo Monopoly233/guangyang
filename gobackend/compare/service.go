@@ -1,7 +1,6 @@
 package compare
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,14 +28,34 @@ type Service struct {
 	queue     *queue.InMemoryQueue
 	tmpRoot   string
 	pyAPIBase string
+	inflight  chan struct{}
+}
+
+var pythonHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+	Timeout: 180 * time.Second,
 }
 
 func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string) *Service {
+	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
+	if maxInflight <= 0 {
+		maxInflight = 1
+	}
 	return &Service{
 		store:     st,
 		queue:     q,
 		tmpRoot:   tmpRoot,
 		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
+		inflight:  make(chan struct{}, maxInflight),
 	}
 }
 
@@ -68,23 +88,17 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart
-	if err := r.ParseMultipartForm(64 << 20); err != nil { // 64MB
+	// Stream multipart to disk to reduce memory usage (avoid ParseMultipartForm buffering).
+	maxUploadMB := readEnvIntDefault("COMPARE_MAX_UPLOAD_MB", 128)
+	if maxUploadMB <= 0 {
+		maxUploadMB = 128
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxUploadMB)<<20)
+	mr, err := r.MultipartReader()
+	if err != nil {
 		http.Error(w, "invalid multipart form", http.StatusBadRequest)
 		return
 	}
-	f1, f1h, err := r.FormFile("file1")
-	if err != nil {
-		http.Error(w, "missing file1", http.StatusBadRequest)
-		return
-	}
-	defer f1.Close()
-	f2, f2h, err := r.FormFile("file2")
-	if err != nil {
-		http.Error(w, "missing file2", http.StatusBadRequest)
-		return
-	}
-	defer f2.Close()
 
 	jobID := newJobID()
 	jobDir := filepath.Join(s.tmpRoot, "compare_jobs", jobID)
@@ -93,14 +107,49 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file1Path, err := saveUploadTo(jobDir, "file1_"+safeBaseName(f1h), f1)
-	if err != nil {
-		http.Error(w, "failed to save file1", http.StatusInternalServerError)
-		return
+	var (
+		file1Path string
+		file2Path string
+	)
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, "invalid multipart stream", http.StatusBadRequest)
+			return
+		}
+		if part == nil {
+			continue
+		}
+		name := strings.TrimSpace(part.FormName())
+		if name != "file1" && name != "file2" {
+			// Drain unknown parts to keep parser healthy.
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+
+		fn := safeBaseNameFromName(part.FileName())
+		prefix := "file1_"
+		if name == "file2" {
+			prefix = "file2_"
+		}
+		dst, err := saveUploadTo(jobDir, prefix+fn, part)
+		_ = part.Close()
+		if err != nil {
+			http.Error(w, "failed to save "+name, http.StatusInternalServerError)
+			return
+		}
+		if name == "file1" {
+			file1Path = dst
+		} else {
+			file2Path = dst
+		}
 	}
-	file2Path, err := saveUploadTo(jobDir, "file2_"+safeBaseName(f2h), f2)
-	if err != nil {
-		http.Error(w, "failed to save file2", http.StatusInternalServerError)
+	if file1Path == "" || file2Path == "" {
+		http.Error(w, "missing file1 or file2", http.StatusBadRequest)
 		return
 	}
 
@@ -323,7 +372,7 @@ func safeBaseName(h *multipart.FileHeader) string {
 	return filepath.Base(h.Filename)
 }
 
-func saveUploadTo(dir, name string, src multipart.File) (string, error) {
+func saveUploadTo(dir, name string, src io.Reader) (string, error) {
 	if dir == "" || name == "" {
 		return "", errors.New("invalid path")
 	}
@@ -340,6 +389,10 @@ func saveUploadTo(dir, name string, src multipart.File) (string, error) {
 }
 
 func (s *Service) runCompareTask(jobID string) {
+	// Backpressure: limit concurrent compare executions per pod.
+	s.acquireInflight()
+	defer s.releaseInflight()
+
 	job, ok, err := s.store.Get(jobID)
 	if err != nil {
 		return
@@ -443,32 +496,50 @@ func callPythonCompareExport(pyBase, file1Path, file2Path, outXLSXPath string) e
 	}
 	defer f2.Close()
 
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if err := addFilePart(w, "file1", filepath.Base(file1Path), f1); err != nil {
-		_ = w.Close()
-		return err
-	}
-	if err := addFilePart(w, "file2", filepath.Base(file2Path), f2); err != nil {
-		_ = w.Close()
-		return err
-	}
-	if err := w.Close(); err != nil {
-		return err
-	}
+	// Stream multipart upload to Python to avoid buffering full request body in memory.
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	contentType := mw.FormDataContentType()
 
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(pyBase, "/")+"/compare/export", &buf)
+	writeErrCh := make(chan error, 1)
+	go func() {
+		defer close(writeErrCh)
+		defer func() { _ = pw.Close() }()
+
+		if err := addFilePart(mw, "file1", filepath.Base(file1Path), f1); err != nil {
+			_ = pw.CloseWithError(err)
+			writeErrCh <- err
+			return
+		}
+		if err := addFilePart(mw, "file2", filepath.Base(file2Path), f2); err != nil {
+			_ = pw.CloseWithError(err)
+			writeErrCh <- err
+			return
+		}
+		if err := mw.Close(); err != nil {
+			_ = pw.CloseWithError(err)
+			writeErrCh <- err
+			return
+		}
+		writeErrCh <- nil
+	}()
+
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(pyBase, "/")+"/compare/export", pr)
 	if err != nil {
+		_ = pr.Close()
 		return err
 	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
-	client := &http.Client{Timeout: 180 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := pythonHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("请求 Python compare/export 失败: %w", err)
 	}
 	defer resp.Body.Close()
+	// Ensure the writer goroutine finished without error.
+	if werr := <-writeErrCh; werr != nil {
+		return werr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := strings.TrimSpace(string(b))
@@ -507,4 +578,40 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (s *Service) acquireInflight() {
+	if s.inflight == nil {
+		return
+	}
+	s.inflight <- struct{}{}
+}
+
+func (s *Service) releaseInflight() {
+	if s.inflight == nil {
+		return
+	}
+	select {
+	case <-s.inflight:
+	default:
+	}
+}
+
+func safeBaseNameFromName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "upload.xlsx"
+	}
+	return filepath.Base(name)
+}
+
+func readEnvIntDefault(key string, defaultVal int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	return n
 }
