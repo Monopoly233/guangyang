@@ -16,10 +16,10 @@ import (
 )
 
 func main() {
-	// Start a persistent LibreOffice listener via unoserver to avoid per-request cold start.
+	// Start a persistent LibreOffice listener via unoconv to avoid per-request cold start.
 	// This keeps LibreOffice warm in the container.
-	if err := startUnoserver("127.0.0.1", "2003", "127.0.0.1", "2002"); err != nil {
-		log.Fatalf("failed to start unoserver: %v", err)
+	if err := startUnoconvListener("127.0.0.1", "2002"); err != nil {
+		log.Fatalf("failed to start unoconv listener: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -37,8 +37,8 @@ func main() {
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
-	// Healthy only if server port is accepting connections.
-	if err := waitTCP("127.0.0.1:2003", 200*time.Millisecond, 1); err != nil {
+	// Healthy only if listener port is accepting connections.
+	if err := waitTCP("127.0.0.1:2002", 200*time.Millisecond, 1); err != nil {
 		http.Error(w, "listener not ready", http.StatusServiceUnavailable)
 		return
 	}
@@ -160,31 +160,21 @@ func readEnvDefault(key, def string) string {
 	return v
 }
 
-func startUnoserver(interfaceHost, port, unoInterface, unoPort string) error {
-	interfaceHost = strings.TrimSpace(interfaceHost)
+func startUnoconvListener(host, port string) error {
+	host = strings.TrimSpace(host)
 	port = strings.TrimSpace(port)
-	unoInterface = strings.TrimSpace(unoInterface)
-	unoPort = strings.TrimSpace(unoPort)
-	if interfaceHost == "" {
-		interfaceHost = "127.0.0.1"
+	if host == "" {
+		host = "127.0.0.1"
 	}
 	if port == "" {
-		port = "2003"
-	}
-	if unoInterface == "" {
-		unoInterface = "127.0.0.1"
-	}
-	if unoPort == "" {
-		unoPort = "2002"
+		port = "2002"
 	}
 
 	cmd := exec.Command(
-		"unoserver",
-		"--interface", interfaceHost,
+		"unoconv",
+		"--listener",
+		"--server", host,
 		"--port", port,
-		"--uno-interface", unoInterface,
-		"--uno-port", unoPort,
-		"--conversion-timeout", "120",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -194,7 +184,7 @@ func startUnoserver(interfaceHost, port, unoInterface, unoPort string) error {
 	}
 
 	// Wait until listener socket is ready.
-	if err := waitTCP(net.JoinHostPort(interfaceHost, port), 500*time.Millisecond, 90); err != nil {
+	if err := waitTCP(net.JoinHostPort(host, port), 500*time.Millisecond, 60); err != nil {
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("listener port not ready: %w", err)
 	}
@@ -233,22 +223,24 @@ func convertWithListener(ctx context.Context, inPath, outPath string) error {
 	defer cancel()
 
 	// Ensure listener is up; if not, fail fast (do not auto-launch per request).
-	if err := waitTCP("127.0.0.1:2003", 200*time.Millisecond, 5); err != nil {
+	if err := waitTCP("127.0.0.1:2002", 200*time.Millisecond, 5); err != nil {
 		return fmt.Errorf("listener 不可用: %w", err)
 	}
 
-	// Use unoconvert client to connect to existing listener, no cold-start.
+	// Use unoconv client to connect to existing listener, no cold-start.
+	// --no-launch ensures it won't start a temporary office instance.
 	cmd := exec.CommandContext(ctx,
-		"unoconvert",
-		"--host", "127.0.0.1",
-		"--port", "2003",
-		"--host-location", "local",
+		"unoconv",
+		"--no-launch",
+		"--server", "127.0.0.1",
+		"--port", "2002",
+		"-f", "xlsx",
+		"-o", outPath,
 		inPath,
-		outPath,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("unoconvert 转换失败: %v output=%s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("unoconv 转换失败: %v output=%s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

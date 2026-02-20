@@ -16,9 +16,6 @@ variables:
   ACR_NAMESPACE: guangyang
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
 
-  # ACK 自动部署开关：默认关闭（你要手动 deploy 就保持 false）
-  AUTO_DEPLOY_ACK: "true"
-
   # 0.01 元 = 1 分（可在 GitLab Variables 覆盖）
   COMPARE_JOB_FEE_FEN: "1"
 
@@ -46,7 +43,7 @@ acr_build_push:
 
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
-    # xlsconvert：只负责 .xls 转换，镜像较大但使用频率低
+    # xlsconvert：只负责 .xls 转换（LibreOffice 常驻 listener），镜像较大但使用频率低
     - docker build --pull -t "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" -f gobackend/cmd/xlsconvert/Dockerfile gobackend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" -f python/FastAPI/Dockerfile python/FastAPI
 
@@ -76,9 +73,8 @@ deploy_ack:
   stage: deploy
   needs: ["acr_build_push"]
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $AUTO_DEPLOY_ACK == "true"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
       when: on_success
-    - when: never
   script:
     - set -euo pipefail
     - echo "======== [1/4] 准备 kubeconfig ========"

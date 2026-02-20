@@ -13,11 +13,24 @@ RUN go mod download
 COPY . .
 RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 
-# Runtime: LibreOffice listener prebuilt (avoid apt/GPG issues)
-ARG XLSCONVERT_RUNTIME_BASE=ghcr.io/unoconv/unoserver-docker:latest
-FROM ${XLSCONVERT_RUNTIME_BASE}
+# Runtime: LibreOffice for .xls conversion
+FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      python3 \
+      python3-uno \
+      unoconv \
+      libreoffice-calc \
+      libreoffice-core \
+      libreoffice-common \
+      fontconfig \
+      fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8090
 ENV PORT=8090

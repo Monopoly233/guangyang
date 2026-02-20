@@ -149,10 +149,8 @@ export async function downloadCompareExport(jobId) {
     const text = await resp.text();
     throw new Error(text || resp.statusText || "下载失败");
   }
-  const contentType = resp.headers.get("content-type") || "";
-  const finalUrl = resp.url || directUrl;
   const blob = await resp.blob();
-  return { blob, filename, directUrl, contentType, finalUrl };
+  return { blob, filename, directUrl };
 }
 
 export async function cancelCompareJob(jobId) {
