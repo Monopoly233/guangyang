@@ -14,7 +14,8 @@ COPY . .
 RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 
 # Runtime: LibreOffice listener prebuilt (avoid apt/GPG issues)
-FROM ghcr.io/unoconv/unoserver-docker:latest
+ARG XLSCONVERT_RUNTIME_BASE=ghcr.io/unoconv/unoserver-docker:latest
+FROM ${XLSCONVERT_RUNTIME_BASE}
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
 
