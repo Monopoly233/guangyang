@@ -247,6 +247,10 @@ def compare_excel_tables_df(
     - increased_df：只在文件2（增加项）
     - different_df：同一主键内容不一致（两侧各一行，含 文件来源/不同列）
     """
+    # 保留原始列顺序（导出/展示时应与原文件一致）
+    orig_cols1 = list(df1.columns)
+    orig_cols2 = list(df2.columns)
+
     # 统一 key（关键修复：避免 1 vs 1.0 导致主键对不齐）
     df1_c = df1.copy()
     df2_c = df2.copy()
@@ -265,13 +269,24 @@ def compare_excel_tables_df(
 
     reduced_df = df1_c.loc[only1_idx].reset_index()
     increased_df = df2_c.loc[only2_idx].reset_index()
+    # 结果表列顺序：尽量按各自原文件顺序排列
+    if not reduced_df.empty:
+        reduced_df = reduced_df.reindex(columns=[c for c in orig_cols1 if c in reduced_df.columns])
+    if not increased_df.empty:
+        increased_df = increased_df.reindex(columns=[c for c in orig_cols2 if c in increased_df.columns])
 
     if len(common_idx) == 0:
         return reduced_df, increased_df, None
 
     a = df1_c.loc[common_idx]
     b = df2_c.loc[common_idx]
-    all_cols = sorted(set(a.columns) | set(b.columns))
+    # 列顺序：优先 file1 的列顺序，再补上 file2 中新增列（保持 file2 自身顺序）
+    all_cols = [c for c in orig_cols1 if c != key and c in set(a.columns) | set(b.columns)]
+    for c in orig_cols2:
+        if c == key:
+            continue
+        if c not in all_cols and c in set(a.columns) | set(b.columns):
+            all_cols.append(c)
     a = a.reindex(columns=all_cols)
     b = b.reindex(columns=all_cols)
 
