@@ -21,8 +21,10 @@ type CompareJob struct {
 	File1Path string `json:"-"`
 	File2Path string `json:"-"`
 
-	// Result (saved on disk)
+	// Result (saved on disk or OSS)
 	ResultPath string `json:"-"`
+	// ResultOSSKey is the OSS object key (bucket is configured separately).
+	ResultOSSKey string `json:"-"`
 
 	// Payment gating
 	AmountYuan  float64    `json:"amount,omitempty"` // 单位：元（AwaitingPayment 时返回给前端展示）

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gobackend/domain"
+	"gobackend/ossstore"
 	"gobackend/queue"
 	"gobackend/store"
 	"gobackend/wechat"
@@ -29,6 +30,7 @@ type Service struct {
 	tmpRoot   string
 	pyAPIBase string
 	inflight  chan struct{}
+	oss       *ossstore.Store
 }
 
 var pythonHTTPClient = &http.Client{
@@ -45,7 +47,7 @@ var pythonHTTPClient = &http.Client{
 	Timeout: 180 * time.Second,
 }
 
-func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string) *Service {
+func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string, oss *ossstore.Store) *Service {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
@@ -56,6 +58,7 @@ func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPI
 		tmpRoot:   tmpRoot,
 		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
 		inflight:  make(chan struct{}, maxInflight),
+		oss:       oss,
 	}
 }
 
@@ -248,7 +251,7 @@ func (s *Service) handleGetJob(w http.ResponseWriter, r *http.Request, jobID str
 	// 防御性：若已支付且结果已生成，但状态仍停留在 awaiting_payment，则对外视为 ready
 	// （避免轮询端一直弹支付框）。
 	status := job.Status
-	if status == domain.CompareJobStatusAwaitingPayment && job.Paid && job.ResultPath != "" {
+	if status == domain.CompareJobStatusAwaitingPayment && job.Paid && hasResult(job) {
 		status = domain.CompareJobStatusReady
 	}
 	// Return a safe subset
@@ -340,8 +343,31 @@ func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, j
 		http.Error(w, "订单已取消", http.StatusGone)
 		return
 	}
-	if !job.Paid || job.Status != domain.CompareJobStatusReady || job.ResultPath == "" {
+	if !job.Paid || job.Status != domain.CompareJobStatusReady || !hasResult(job) {
 		http.Error(w, "请先完成支付后再下载结果", http.StatusPaymentRequired)
+		return
+	}
+	// Prefer OSS signed URL when available (cross-pod safe).
+	if job.ResultOSSKey != "" && s.oss != nil && s.oss.Enabled() {
+		// 兼容前端 fetch(blob) + 预览：这里不要 302 跳转，否则会触发跨域 + CORS。
+		// 直接由 Go 侧从 OSS 拉取并转发给浏览器。
+		rc, err := s.oss.GetObject(job.ResultOSSKey)
+		if err != nil {
+			http.Error(w, "从 OSS 获取结果失败", http.StatusBadGateway)
+			return
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		utf8Name := "比对结果.xlsx"
+		escaped := url.PathEscape(utf8Name)
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", "compare.xlsx", escaped))
+		_, _ = io.Copy(w, rc)
+		return
+	}
+
+	// Fallback: local filesystem
+	if job.ResultPath == "" {
+		http.Error(w, "结果文件不存在或已过期", http.StatusGone)
 		return
 	}
 	if _, err := os.Stat(job.ResultPath); err != nil {
@@ -418,6 +444,40 @@ func (s *Service) runCompareTask(jobID string) {
 		return
 	}
 
+	// 1.5) Upload result to OSS (if enabled) for cross-pod download.
+	var ossKey string
+	if s.oss != nil && s.oss.Enabled() {
+		ossKey = s.oss.ObjectKeyForJob(jobID)
+		if err := s.oss.PutResultFile(ossKey, resultPath); err != nil {
+			_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+				j.Status = domain.CompareJobStatusFailed
+				j.Error = "上传 OSS 失败: " + err.Error()
+			})
+			return
+		}
+		// Best-effort cleanup: local file is no longer needed once uploaded.
+		_ = os.Remove(resultPath)
+	}
+
+	// Persist result location early to avoid races with WeChat notify / polling.
+	_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+		if j.Status == domain.CompareJobStatusCancelled {
+			return
+		}
+		if ossKey != "" {
+			j.ResultOSSKey = ossKey
+			j.ResultPath = ""
+			return
+		}
+		j.ResultPath = resultPath
+	})
+
+	// Refresh job state after generating result (Paid/Cancelled may change concurrently).
+	job, ok, err = s.store.Get(jobID)
+	if err != nil || !ok {
+		return
+	}
+
 	// If cancelled while generating, stop here.
 	if j2, ok, _ := s.store.Get(jobID); ok && j2.Status == domain.CompareJobStatusCancelled {
 		return
@@ -428,6 +488,10 @@ func (s *Service) runCompareTask(jobID string) {
 		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
 			j.Status = domain.CompareJobStatusReady
 			j.ResultPath = resultPath
+			if ossKey != "" {
+				j.ResultOSSKey = ossKey
+				j.ResultPath = ""
+			}
 		})
 		return
 	}
@@ -446,6 +510,10 @@ func (s *Service) runCompareTask(jobID string) {
 			}
 			j.Status = domain.CompareJobStatusReady
 			j.ResultPath = resultPath
+			if ossKey != "" {
+				j.ResultOSSKey = ossKey
+				j.ResultPath = ""
+			}
 			j.AmountYuan = 0
 			j.CodeURL = ""
 		})
@@ -458,6 +526,10 @@ func (s *Service) runCompareTask(jobID string) {
 		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
 			j.Status = domain.CompareJobStatusFailed
 			j.ResultPath = resultPath
+			if ossKey != "" {
+				j.ResultOSSKey = ossKey
+				j.ResultPath = ""
+			}
 			j.Error = "创建微信支付订单失败: " + err.Error()
 		})
 		return
@@ -469,9 +541,20 @@ func (s *Service) runCompareTask(jobID string) {
 		}
 		j.Status = domain.CompareJobStatusAwaitingPayment
 		j.ResultPath = resultPath
+		if ossKey != "" {
+			j.ResultOSSKey = ossKey
+			j.ResultPath = ""
+		}
 		j.AmountYuan = float64(feeFen) / 100.0
 		j.CodeURL = codeURL
 	})
+}
+
+func hasResult(job *domain.CompareJob) bool {
+	if job == nil {
+		return false
+	}
+	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
 }
 
 func callPythonCompareExport(pyBase, file1Path, file2Path, outXLSXPath string) error {

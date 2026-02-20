@@ -69,6 +69,7 @@ type compareJobRecord struct {
 	File1Path  string `json:"file1Path"`
 	File2Path  string `json:"file2Path"`
 	ResultPath string `json:"resultPath"`
+	ResultOSSKey string `json:"resultOssKey"`
 
 	AmountYuan  float64    `json:"amountYuan"`
 	CodeURL     string     `json:"codeUrl"`
@@ -90,6 +91,7 @@ func recordFromJob(j *domain.CompareJob) compareJobRecord {
 		File1Path:   j.File1Path,
 		File2Path:   j.File2Path,
 		ResultPath:  j.ResultPath,
+		ResultOSSKey: j.ResultOSSKey,
 		AmountYuan:  j.AmountYuan,
 		CodeURL:     j.CodeURL,
 		Paid:        j.Paid,
@@ -107,6 +109,7 @@ func jobFromRecord(r compareJobRecord) *domain.CompareJob {
 		File1Path:   r.File1Path,
 		File2Path:   r.File2Path,
 		ResultPath:  r.ResultPath,
+		ResultOSSKey: r.ResultOSSKey,
 		AmountYuan:  r.AmountYuan,
 		CodeURL:     r.CodeURL,
 		Paid:        r.Paid,

@@ -138,7 +138,7 @@ func (h *notifyHandler) handle(w http.ResponseWriter, r *http.Request) {
 			j.Paid = true
 			j.PaidAt = &now
 			// 如果结果已生成，则放行；否则先退出“等待支付”，继续轮询直到 ready。
-			if j.ResultPath != "" && (j.Status == domain.CompareJobStatusAwaitingPayment || j.Status == domain.CompareJobStatusProcessing) {
+			if hasResult(j) && (j.Status == domain.CompareJobStatusAwaitingPayment || j.Status == domain.CompareJobStatusProcessing) {
 				j.Status = domain.CompareJobStatusReady
 				j.AmountYuan = 0
 				j.CodeURL = ""
@@ -162,6 +162,13 @@ func (h *notifyHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "OK"})
+}
+
+func hasResult(job *domain.CompareJob) bool {
+	if job == nil {
+		return false
+	}
+	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {

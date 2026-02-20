@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gobackend/compare"
+	"gobackend/ossstore"
 	"gobackend/queue"
 	"gobackend/store"
 	"gobackend/wechat"
@@ -133,7 +134,18 @@ func main() {
 		}
 		jobStore = rs
 	}
-	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase)
+
+	var ossSt *ossstore.Store
+	if st, enabled, err := ossstore.NewFromEnv(); err != nil {
+		if enabled {
+			log.Fatalf("init oss store failed: %v", err)
+		}
+	} else if enabled {
+		ossSt = st
+		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
+	}
+
+	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase, ossSt)
 	compareSvc.RegisterRoutes(mux)
 	wechat.RegisterNotifyRoutes(mux, jobStore, q)
 

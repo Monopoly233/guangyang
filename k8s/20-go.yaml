@@ -34,6 +34,19 @@ spec:
               value: "/app/tmp"
             - name: REDIS_ADDR
               value: "10.0.40.253:6379"
+            # OSS：对比结果上传 + export 走签名下载链接（RRSA 自动拿临时凭证）
+            - name: OSS_BUCKET
+              value: "guangyangoss"
+            - name: OSS_REGION
+              value: "cn-heyuan"
+            - name: OSS_ENDPOINT_INTERNAL
+              value: "https://oss-cn-heyuan-internal.aliyuncs.com"
+            - name: OSS_ENDPOINT_PUBLIC
+              value: "https://oss-cn-heyuan.aliyuncs.com"
+            - name: OSS_PREFIX
+              value: "compare-results"
+            - name: OSS_SIGN_EXPIRE_SECONDS
+              value: "600"
             # WeChatPay（真实支付测试时需要注入）
             - name: WECHAT_NOTIFY_URL
               valueFrom:
