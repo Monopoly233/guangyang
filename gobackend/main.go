@@ -121,7 +121,6 @@ func main() {
 
 	// Compare jobs (pay-gated export)
 	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
-	pyBase := readEnvDefault("PY_API_BASE", "http://localhost:8000")
 	qBuf := readEnvIntDefault("COMPARE_QUEUE_BUFFER", 256)
 	qWorkers := readEnvIntDefault("COMPARE_QUEUE_WORKERS", 2)
 	q := queue.NewInMemoryQueue(qBuf)
@@ -145,7 +144,7 @@ func main() {
 		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
 	}
 
-	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase, ossSt)
+	compareSvc := compare.NewService(jobStore, q, tmpRoot, ossSt)
 	compareSvc.RegisterRoutes(mux)
 	wechat.RegisterNotifyRoutes(mux, jobStore, q)
 

@@ -24,8 +24,6 @@ spec:
           env:
             - name: PORT
               value: "8080"
-            - name: PY_API_BASE
-              value: "http://python:8000"
             - name: CORS_ALLOW_ORIGIN
               value: "*"
             - name: COMPARE_JOB_FEE_FEN

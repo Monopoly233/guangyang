@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +18,7 @@ import (
 	"time"
 
 	"gobackend/domain"
+	"gobackend/excelcmp"
 	"gobackend/ossstore"
 	"gobackend/queue"
 	"gobackend/store"
@@ -27,40 +26,24 @@ import (
 )
 
 type Service struct {
-	store     store.CompareJobStore
-	queue     *queue.InMemoryQueue
-	tmpRoot   string
-	pyAPIBase string
-	inflight  chan struct{}
-	oss       *ossstore.Store
+	store    store.CompareJobStore
+	queue    *queue.InMemoryQueue
+	tmpRoot  string
+	inflight chan struct{}
+	oss      *ossstore.Store
 }
 
-var pythonHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	},
-	Timeout: 180 * time.Second,
-}
-
-func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string, oss *ossstore.Store) *Service {
+func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot string, oss *ossstore.Store) *Service {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
 	}
 	return &Service{
-		store:     st,
-		queue:     q,
-		tmpRoot:   tmpRoot,
-		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
-		inflight:  make(chan struct{}, maxInflight),
-		oss:       oss,
+		store:    st,
+		queue:    q,
+		tmpRoot:  tmpRoot,
+		inflight: make(chan struct{}, maxInflight),
+		oss:      oss,
 	}
 }
 
@@ -421,8 +404,6 @@ func newJobID() string {
 	return fmt.Sprintf("job_%d", time.Now().UnixNano())
 }
 
-
-
 func saveUploadTo(dir, name string, src io.Reader) (string, error) {
 	if dir == "" || name == "" {
 		return "", errors.New("invalid path")
@@ -497,7 +478,7 @@ func (s *Service) runCompareTask(jobID string) {
 
 	// 1) Call Python /compare/export to generate xlsx
 	resultPath := filepath.Join(jobDir, "comparison_result.xlsx")
-	if err := callPythonCompareExport(s.pyAPIBase, job.File1Path, job.File2Path, job.File1Name, job.File2Name, resultPath); err != nil {
+	if err := excelcmp.GenerateCompareExportXLSX(job.File1Path, job.File2Path, job.File1Name, job.File2Name, resultPath); err != nil {
 		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
 			j.Status = domain.CompareJobStatusFailed
 			j.Error = err.Error()
@@ -618,115 +599,6 @@ func hasResult(job *domain.CompareJob) bool {
 	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
 }
 
-func callPythonCompareExport(pyBase, file1Path, file2Path, file1Name, file2Name, outXLSXPath string) error {
-	if pyBase == "" {
-		return errors.New("PY_API_BASE 为空")
-	}
-	if file1Path == "" || file2Path == "" {
-		return errors.New("输入文件路径为空")
-	}
-	if outXLSXPath == "" {
-		return errors.New("输出路径为空")
-	}
-
-	f1, err := os.Open(file1Path)
-	if err != nil {
-		return fmt.Errorf("打开 file1 失败: %w", err)
-	}
-	defer f1.Close()
-	f2, err := os.Open(file2Path)
-	if err != nil {
-		return fmt.Errorf("打开 file2 失败: %w", err)
-	}
-	defer f2.Close()
-
-	// Stream multipart upload to Python to avoid buffering full request body in memory.
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	contentType := mw.FormDataContentType()
-
-	writeErrCh := make(chan error, 1)
-	go func() {
-		defer close(writeErrCh)
-		defer func() { _ = pw.Close() }()
-
-		n1 := strings.TrimSpace(file1Name)
-		if n1 == "" {
-			n1 = filepath.Base(file1Path)
-		}
-		n2 := strings.TrimSpace(file2Name)
-		if n2 == "" {
-			n2 = filepath.Base(file2Path)
-		}
-
-		if err := addFilePart(mw, "file1", n1, f1); err != nil {
-			_ = pw.CloseWithError(err)
-			writeErrCh <- err
-			return
-		}
-		if err := addFilePart(mw, "file2", n2, f2); err != nil {
-			_ = pw.CloseWithError(err)
-			writeErrCh <- err
-			return
-		}
-		if err := mw.Close(); err != nil {
-			_ = pw.CloseWithError(err)
-			writeErrCh <- err
-			return
-		}
-		writeErrCh <- nil
-	}()
-
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(pyBase, "/")+"/compare/export", pr)
-	if err != nil {
-		_ = pr.Close()
-		return err
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	resp, err := pythonHTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("请求 Python compare/export 失败: %w", err)
-	}
-	defer resp.Body.Close()
-	// Ensure the writer goroutine finished without error.
-	if werr := <-writeErrCh; werr != nil {
-		return werr
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := strings.TrimSpace(string(b))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return fmt.Errorf("Python compare/export 返回错误: %s", msg)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(outXLSXPath), 0o755); err != nil {
-		return fmt.Errorf("创建输出目录失败: %w", err)
-	}
-	out, err := os.Create(outXLSXPath)
-	if err != nil {
-		return fmt.Errorf("创建结果文件失败: %w", err)
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return fmt.Errorf("写入结果文件失败: %w", err)
-	}
-	return nil
-}
-
-func addFilePart(w *multipart.Writer, fieldName, filename string, r io.Reader) error {
-	part, err := w.CreateFormFile(fieldName, filename)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(part, r); err != nil {
-		return err
-	}
-	return nil
-}
-
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -778,16 +650,56 @@ func readEnvStringDefault(key, defaultVal string) string {
 }
 
 func convertXLSIfNeeded(inPath string) (outPath string, converted bool, err error) {
-	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(inPath)))
-	if ext != ".xls" {
-		return inPath, false, nil
-	}
 	if inPath == "" {
 		return "", false, errors.New("输入文件路径为空")
 	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(inPath)))
 
-	// 输出到同目录：xxx.xls -> xxx.xlsx
-	outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".xlsx"
+	// Sniff file header to handle mismatched extension/content:
+	// - xls but content is actually xlsx(zip): don't convert; excelize can read it directly.
+	// - xlsx but content is legacy OLE2: must convert first.
+	var (
+		isZip  bool
+		isOle2 bool
+	)
+	if f, e := os.Open(inPath); e == nil {
+		var hdr [8]byte
+		n, _ := f.Read(hdr[:])
+		_ = f.Close()
+		if n >= 2 && hdr[0] == 'P' && hdr[1] == 'K' {
+			isZip = true
+		}
+		if n >= 8 {
+			if hdr == [8]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1} {
+				isOle2 = true
+			}
+		}
+	}
+
+	needConvert := false
+	if ext == ".xls" {
+		if isZip {
+			return inPath, false, nil
+		}
+		needConvert = true
+	} else {
+		// mislabeled legacy xls
+		if isOle2 {
+			needConvert = true
+		}
+	}
+	if !needConvert {
+		return inPath, false, nil
+	}
+
+	// 输出到同目录：
+	// - xxx.xls -> xxx.xlsx
+	// - xxx.xlsx(但实际是 OLE2) -> xxx.converted.xlsx（避免覆盖原文件）
+	if ext == ".xls" {
+		outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".xlsx"
+	} else {
+		outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".converted.xlsx"
+	}
 
 	host := readEnvStringDefault("XLSCONVERT_HOST", "xlsconvert")
 	port := readEnvIntDefault("XLSCONVERT_PORT", 2003)
