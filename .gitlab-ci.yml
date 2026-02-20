@@ -107,6 +107,17 @@ deploy_ack:
         -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' >/dev/null || true
 
     - kubectl apply -f k8s/
+    - echo "======== (post) 固定使用本次镜像 TAG ========"
+    - |
+      # 避免依赖 latest 造成“拉到旧镜像/缓存镜像”导致行为不一致
+      test -n "${IMAGE_TAG:-}"
+      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
+      kubectl -n gy set image deploy/python python="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
+      kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
+      kubectl -n gy rollout status deploy/go --timeout=180s
+      kubectl -n gy rollout status deploy/python --timeout=180s
+      kubectl -n gy rollout status deploy/web --timeout=180s
     - kubectl -n gy get deploy,svc,pod
     - |
       # 若 Pod 处于 Pending，自动输出调度事件，方便定位（资源不足/污点/节点未就绪等）
