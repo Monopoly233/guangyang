@@ -135,11 +135,13 @@ export async function downloadCompareExport(jobId) {
     headers: { Accept: "application/json" },
   });
   const meta = await handleJSONResponse(metaResp);
-  const directUrl = (meta?.url || "").trim();
+  const rawUrl = (meta?.url || "").trim();
   const filename = meta?.filename || "比对结果.xlsx";
-  if (!directUrl) {
+  if (!rawUrl) {
     throw new Error("未获取到下载链接");
   }
+  // If backend returns a relative path (e.g. /compare/jobs/.../export), prefix it with GO_API_BASE
+  const directUrl = rawUrl.startsWith("/") ? `${GO_API_BASE}${rawUrl}` : rawUrl;
 
   // Fetch from OSS directly (no credentials/cookies)
   const resp = await fetch(directUrl, { method: "GET", mode: "cors" });

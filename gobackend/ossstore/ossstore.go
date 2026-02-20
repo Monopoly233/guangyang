@@ -187,7 +187,6 @@ func (s *Store) SignDownloadURL(objectKey, downloadFilename string) (string, err
 		oss.HTTPGet,
 		int64(s.signExpiry.Seconds()),
 		oss.ResponseContentDisposition(disp),
-		oss.ResponseContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 	)
 	if err != nil {
 		return "", err

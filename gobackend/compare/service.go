@@ -377,6 +377,14 @@ func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, j
 		http.Error(w, "结果文件不存在或已过期", http.StatusGone)
 		return
 	}
+	if wantsJSON(r) {
+		// 返回相对路径，让前端用 GO_API_BASE 拼接（兼容 Nginx /api 前缀代理）
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"url":      r.URL.Path,
+			"filename": "比对结果.xlsx",
+		})
+		return
+	}
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	// 固定下载文件名：比对结果.xlsx（同时提供 RFC5987 filename* 以兼容 UTF-8）
 	utf8Name := "比对结果.xlsx"
