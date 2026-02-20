@@ -18,6 +18,11 @@ spec:
       protocol: HTTP
     - port: 443
       protocol: HTTPS
+      certificates:
+        # 证书 ID（CertIdentifier）。你在 ALB 监听里选择的证书显示为：
+        # 23565798-cn-hangzhou | cloudflare2guangyang
+        - CertificateId: 23565798-cn-hangzhou
+          IsDefault: true
 ---
 apiVersion: networking.k8s.io/v1
 kind: IngressClass
