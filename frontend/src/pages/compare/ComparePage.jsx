@@ -253,7 +253,7 @@ class ComparePage extends React.Component {
             </div>
           </form>
           <div className="info-box">
-            <div style={{ fontWeight: 600 }}>当前收费：0 元/次</div>
+            <div style={{ fontWeight: 600 }}>当前收费：0.01 元/次</div>
             {this.state.jobId ? (
               <div style={{ marginTop: 6, color: "#334155" }}>
                 Job：{this.state.jobId}（状态：{this.state.jobStatus || "unknown"}）
