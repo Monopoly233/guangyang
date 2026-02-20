@@ -17,6 +17,16 @@ RUN go build -o /out/app .
 
 FROM alpine:3.20
 WORKDIR /app
+
+# Install unoconvert client (no LibreOffice needed) to talk to xlsconvert/unoserver.
+# Use a venv to avoid system-python packaging constraints.
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN apk add --no-cache ca-certificates python3 py3-pip && \
+    python3 -m venv /opt/unoserver-client && \
+    /opt/unoserver-client/bin/pip install --no-cache-dir --upgrade pip && \
+    /opt/unoserver-client/bin/pip install --no-cache-dir unoserver
+ENV PATH="/opt/unoserver-client/bin:${PATH}"
+
 COPY --from=build /out/app /app/app
 
 EXPOSE 8080

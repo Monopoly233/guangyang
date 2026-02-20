@@ -19,12 +19,18 @@ def read_excel_bytes(content: bytes, filename: str = "") -> pd.DataFrame:
     ext = os.path.splitext((filename or "").lower())[1]
     bio = io.BytesIO(content)
 
+    # 兼容“扩展名与实际内容不一致”的情况：
+    # - .xls 但内容其实是 xlsx（zip: PK...），例如上游已将 .xls 转成 .xlsx 但仍保留原文件名
+    # - .xlsx 但内容是老式 OLE2（D0 CF 11 E0 A1 B1 1A E1）
+    is_zip = len(content) >= 2 and content[:2] == b"PK"
+    is_ole2 = len(content) >= 8 and content[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+
     # xlsx family
-    if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+    if ext in (".xlsx", ".xlsm", ".xltx", ".xltm") or (ext == ".xls" and is_zip):
         return pd.read_excel(bio, engine="openpyxl")
 
     # legacy xls
-    if ext == ".xls":
+    if ext == ".xls" or (ext in (".xlsx", ".xlsm", ".xltx", ".xltm") and is_ole2):
         try:
             bio.seek(0)
             return pd.read_excel(bio, engine="xlrd")

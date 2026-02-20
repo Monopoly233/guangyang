@@ -34,6 +34,15 @@ spec:
               value: "/app/tmp"
             - name: REDIS_ADDR
               value: "10.0.40.253:6379"
+            # xlsconvert（unoserver）：仅当上传是 .xls 时会先转成 .xlsx
+            - name: XLSCONVERT_HOST
+              value: "xlsconvert"
+            - name: XLSCONVERT_PORT
+              value: "2003"
+            - name: XLSCONVERT_PROTOCOL
+              value: "http"
+            - name: XLSCONVERT_TIMEOUT_SECONDS
+              value: "90"
             # OSS：对比结果上传 + export 走签名下载链接（RRSA 自动拿临时凭证）
             - name: OSS_BUCKET
               value: "guangyangoss"

@@ -1,6 +1,7 @@
 package compare
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -419,13 +421,7 @@ func newJobID() string {
 	return fmt.Sprintf("job_%d", time.Now().UnixNano())
 }
 
-func safeBaseName(h *multipart.FileHeader) string {
-	if h == nil || h.Filename == "" {
-		return "upload.xlsx"
-	}
-	// Prevent path traversal
-	return filepath.Base(h.Filename)
-}
+
 
 func saveUploadTo(dir, name string, src io.Reader) (string, error) {
 	if dir == "" || name == "" {
@@ -461,6 +457,42 @@ func (s *Service) runCompareTask(jobID string) {
 	jobDir := filepath.Dir(job.File1Path)
 	if jobDir == "" {
 		jobDir = filepath.Join(s.tmpRoot, "compare_jobs", jobID)
+	}
+
+	// 0) 仅当上传是 .xls：先走 xlsconvert（unoserver）转换为 .xlsx，避免后续解析/比对受老格式影响。
+	// 注意：这里转换的是“文件内容/路径”，但会尽量保留原始文件名（用于导出命名/工作表命名）。
+	var (
+		file1Path = job.File1Path
+		file2Path = job.File2Path
+	)
+	new1, conv1, err := convertXLSIfNeeded(file1Path)
+	if err != nil {
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			j.Status = domain.CompareJobStatusFailed
+			j.Error = err.Error()
+		})
+		return
+	}
+	new2, conv2, err := convertXLSIfNeeded(file2Path)
+	if err != nil {
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			j.Status = domain.CompareJobStatusFailed
+			j.Error = err.Error()
+		})
+		return
+	}
+	if conv1 || conv2 {
+		file1Path, file2Path = new1, new2
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			if j.Status == domain.CompareJobStatusCancelled {
+				return
+			}
+			j.File1Path = file1Path
+			j.File2Path = file2Path
+		})
+		// 同步本地变量，避免后续仍用旧路径
+		job.File1Path = file1Path
+		job.File2Path = file2Path
 	}
 
 	// 1) Call Python /compare/export to generate xlsx
@@ -735,4 +767,76 @@ func readEnvIntDefault(key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+func readEnvStringDefault(key, defaultVal string) string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultVal
+	}
+	return raw
+}
+
+func convertXLSIfNeeded(inPath string) (outPath string, converted bool, err error) {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(inPath)))
+	if ext != ".xls" {
+		return inPath, false, nil
+	}
+	if inPath == "" {
+		return "", false, errors.New("输入文件路径为空")
+	}
+
+	// 输出到同目录：xxx.xls -> xxx.xlsx
+	outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".xlsx"
+
+	host := readEnvStringDefault("XLSCONVERT_HOST", "xlsconvert")
+	port := readEnvIntDefault("XLSCONVERT_PORT", 2003)
+	proto := readEnvStringDefault("XLSCONVERT_PROTOCOL", "http")
+	bin := readEnvStringDefault("XLSCONVERT_BIN", "unoconvert")
+	timeoutSec := readEnvIntDefault("XLSCONVERT_TIMEOUT_SECONDS", 60)
+	keepOrig := strings.EqualFold(strings.TrimSpace(os.Getenv("XLSCONVERT_KEEP_ORIGINAL")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("XLSCONVERT_KEEP_ORIGINAL")), "true")
+
+	if _, lpErr := exec.LookPath(bin); lpErr != nil {
+		return "", true, fmt.Errorf("xls 转换失败：未找到转换客户端 %q（请确认 Go 镜像已安装 unoserver 客户端）", bin)
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 60
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	_ = os.Remove(outPath) // best-effort: 避免上次残留导致误判
+	cmd := exec.CommandContext(
+		ctx,
+		bin,
+		"--host", host,
+		"--port", strconv.Itoa(port),
+		"--protocol", proto,
+		"--host-location", "remote",
+		inPath,
+		outPath,
+	)
+	out, runErr := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "超时"
+		}
+		return "", true, fmt.Errorf("xls 转换超时（%ds）: %s", timeoutSec, msg)
+	}
+	if runErr != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = runErr.Error()
+		}
+		return "", true, fmt.Errorf("xls 转换失败: %s", msg)
+	}
+	if _, statErr := os.Stat(outPath); statErr != nil {
+		return "", true, fmt.Errorf("xls 转换失败：输出文件不存在: %v", statErr)
+	}
+	if !keepOrig {
+		_ = os.Remove(inPath)
+	}
+	return outPath, true, nil
 }
