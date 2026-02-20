@@ -9,8 +9,10 @@ spec:
     # 复用你在 ALB 控制台创建的实例（必须是 Standard/WAF 版；Basic 版不可复用）
     # 你的实例 ID（截图里）：alb-r8l72kghnnh97b0epj
     id: alb-r8l72kghnnh97b0epj
-    forceOverride: false
-    listenerForceOverride: false
+    # 复用模式下，如果你已经在控制台手工创建了同端口/同协议的监听（如 443/HTTPS），
+    # 需要开启 forceOverride 才能让控制器接管并覆盖/对齐监听配置，否则会 FailedApplyModel。
+    forceOverride: true
+    listenerForceOverride: true
   listeners:
     - port: 80
       protocol: HTTP
