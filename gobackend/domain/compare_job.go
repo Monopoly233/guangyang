@@ -20,9 +20,9 @@ type CompareJob struct {
 	// Inputs (saved on disk)
 	File1Path string `json:"-"`
 	File2Path string `json:"-"`
-	// File hashes (sha256 hex) for caching/deduplication
-	File1SHA256 string `json:"-"`
-	File2SHA256 string `json:"-"`
+	// Original upload filenames (for export sheet names / headers)
+	File1Name string `json:"-"`
+	File2Name string `json:"-"`
 
 	// Result (saved on disk or OSS)
 	ResultPath string `json:"-"`

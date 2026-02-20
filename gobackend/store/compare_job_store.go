@@ -68,8 +68,8 @@ type compareJobRecord struct {
 
 	File1Path  string `json:"file1Path"`
 	File2Path  string `json:"file2Path"`
-	File1SHA256 string `json:"file1Sha256"`
-	File2SHA256 string `json:"file2Sha256"`
+	File1Name string `json:"file1Name"`
+	File2Name string `json:"file2Name"`
 	ResultPath string `json:"resultPath"`
 	ResultOSSKey string `json:"resultOssKey"`
 
@@ -92,8 +92,8 @@ func recordFromJob(j *domain.CompareJob) compareJobRecord {
 		CreatedAt:   j.CreatedAt,
 		File1Path:   j.File1Path,
 		File2Path:   j.File2Path,
-		File1SHA256: j.File1SHA256,
-		File2SHA256: j.File2SHA256,
+		File1Name:   j.File1Name,
+		File2Name:   j.File2Name,
 		ResultPath:  j.ResultPath,
 		ResultOSSKey: j.ResultOSSKey,
 		AmountYuan:  j.AmountYuan,
@@ -112,8 +112,8 @@ func jobFromRecord(r compareJobRecord) *domain.CompareJob {
 		CreatedAt:   r.CreatedAt,
 		File1Path:   r.File1Path,
 		File2Path:   r.File2Path,
-		File1SHA256: r.File1SHA256,
-		File2SHA256: r.File2SHA256,
+		File1Name:   r.File1Name,
+		File2Name:   r.File2Name,
 		ResultPath:  r.ResultPath,
 		ResultOSSKey: r.ResultOSSKey,
 		AmountYuan:  r.AmountYuan,

@@ -113,6 +113,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var (
 		file1Path string
 		file2Path string
+		file1Name string
+		file2Name string
 	)
 	for {
 		part, err := mr.NextPart()
@@ -147,8 +149,10 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		if name == "file1" {
 			file1Path = dst
+			file1Name = fn
 		} else {
 			file2Path = dst
+			file2Name = fn
 		}
 	}
 	if file1Path == "" || file2Path == "" {
@@ -162,6 +166,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 		File1Path: file1Path,
 		File2Path: file2Path,
+		File1Name: file1Name,
+		File2Name: file2Name,
 		Paid:      false,
 	}
 	_ = s.store.Create(job)
@@ -459,7 +465,7 @@ func (s *Service) runCompareTask(jobID string) {
 
 	// 1) Call Python /compare/export to generate xlsx
 	resultPath := filepath.Join(jobDir, "comparison_result.xlsx")
-	if err := callPythonCompareExport(s.pyAPIBase, job.File1Path, job.File2Path, resultPath); err != nil {
+	if err := callPythonCompareExport(s.pyAPIBase, job.File1Path, job.File2Path, job.File1Name, job.File2Name, resultPath); err != nil {
 		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
 			j.Status = domain.CompareJobStatusFailed
 			j.Error = err.Error()
@@ -580,7 +586,7 @@ func hasResult(job *domain.CompareJob) bool {
 	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
 }
 
-func callPythonCompareExport(pyBase, file1Path, file2Path, outXLSXPath string) error {
+func callPythonCompareExport(pyBase, file1Path, file2Path, file1Name, file2Name, outXLSXPath string) error {
 	if pyBase == "" {
 		return errors.New("PY_API_BASE 为空")
 	}
@@ -612,12 +618,21 @@ func callPythonCompareExport(pyBase, file1Path, file2Path, outXLSXPath string) e
 		defer close(writeErrCh)
 		defer func() { _ = pw.Close() }()
 
-		if err := addFilePart(mw, "file1", filepath.Base(file1Path), f1); err != nil {
+		n1 := strings.TrimSpace(file1Name)
+		if n1 == "" {
+			n1 = filepath.Base(file1Path)
+		}
+		n2 := strings.TrimSpace(file2Name)
+		if n2 == "" {
+			n2 = filepath.Base(file2Path)
+		}
+
+		if err := addFilePart(mw, "file1", n1, f1); err != nil {
 			_ = pw.CloseWithError(err)
 			writeErrCh <- err
 			return
 		}
-		if err := addFilePart(mw, "file2", filepath.Base(file2Path), f2); err != nil {
+		if err := addFilePart(mw, "file2", n2, f2); err != nil {
 			_ = pw.CloseWithError(err)
 			writeErrCh <- err
 			return
