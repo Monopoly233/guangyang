@@ -66,4 +66,25 @@ deploy_ack:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
-  script: 'echo "TODO: deploy to ACK (kubectl/helm)"'
+  script:
+    - set -euo pipefail
+    - echo "======== [1/4] 准备 kubeconfig ========"
+    - test -n "${KUBECONFIG_B64:-}"
+    - mkdir -p "$HOME/.kube"
+    - echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+    - chmod 600 "$HOME/.kube/config"
+
+    - echo "======== [2/4] 检查 kubectl ========"
+    - |
+      if ! command -v kubectl >/dev/null 2>&1; then
+        echo "kubectl 未安装，请先在 Runner ECS 上安装 kubectl（建议放到 /usr/local/bin/kubectl）"
+        exit 1
+      fi
+
+    - echo "======== [3/4] 连接集群验证 ========"
+    - kubectl version --client=true
+    - kubectl get nodes
+
+    - echo "======== [4/4] 部署到 ACK ========"
+    - kubectl apply -f k8s/
+    - kubectl -n gy get deploy,svc,pod

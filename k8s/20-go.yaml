@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go
+  template:
+    metadata:
+      labels:
+        app: go
+    spec:
+      containers:
+        - name: go
+          image: guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PY_API_BASE
+              value: "http://python:8000"
+            - name: CORS_ALLOW_ORIGIN
+              value: "*"
+            # 先不接入支付/证书：默认 compare 费用为 0，不会走微信下单；
+            # 验证 ALB 路由时可以先 GET /wechatpay/notify 看 405（不会触发验签配置读取）
+            - name: COMPARE_JOB_FEE_FEN
+              value: "0"
+            - name: TMP_ROOT
+              value: "/app/tmp"
+          volumeMounts:
+            - name: tmp
+              mountPath: /app/tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go
+  namespace: gy
+spec:
+  selector:
+    app: go
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+
