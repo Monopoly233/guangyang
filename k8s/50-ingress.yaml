@@ -11,6 +11,7 @@ spec:
     - hosts:
         - api.guangyang.online
         - pay.guangyang.online
+        - guangyang.online
         - www.guangyang.online
   rules:
     - host: api.guangyang.online
@@ -24,6 +25,16 @@ spec:
                 port:
                   number: 8080
     - host: pay.guangyang.online
+      http:
+        paths:
+          - path: /wechatpay/
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: guangyang.online
       http:
         paths:
           - path: /wechatpay/
