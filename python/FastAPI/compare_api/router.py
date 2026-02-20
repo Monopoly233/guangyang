@@ -17,7 +17,7 @@ from .utils import (
     compare_excel_tables,
     compare_excel_tables_df,
     read_excel_bytes,
-    _normalize_scalar_for_compare,
+    compare_excel_tables_artifacts,
 )
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -79,13 +79,14 @@ def _compare_export_bytes_impl(content1: bytes, content2: bytes, file1name: str,
     if onlyid not in df1.columns or onlyid not in df2.columns:
         raise HTTPException(status_code=400, detail=f'Excel文件中必须同时包含"{onlyid}"列')
 
-    reduced_df, increased_df, _different_df = compare_excel_tables_df(
-        df1=df1,
-        df2=df2,
-        key=onlyid,
-        file1name=file1name,
-        file2name=file2name,
-    )
+    try:
+        reduced_df, increased_df, ordered_cols, left_rows, right_rows, diff_mask = compare_excel_tables_artifacts(
+            df1=df1,
+            df2=df2,
+            key=onlyid,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # 将结果写入 xlsx：固定三张表（增加项/减少项/变动项目）
     output = io.BytesIO()
@@ -114,7 +115,7 @@ def _compare_export_bytes_impl(content1: bytes, content2: bytes, file1name: str,
 
     write_df(ws_inc, increased_df, "无增加项")
     write_df(ws_red, reduced_df, "无减少项")
-    _write_diff_side_by_side(ws_diff, df1=df1, df2=df2, key=onlyid, file1name=file1name, file2name=file2name)
+    _write_diff_side_by_side(ws_diff, key=onlyid, ordered_cols=ordered_cols, left_rows=left_rows, right_rows=right_rows, diff_mask=diff_mask, file1name=file1name, file2name=file2name)
 
     wb.save(output)
     return output.getvalue()
@@ -168,75 +169,12 @@ def _safe_cell_value(v):
     return v
 
 
-def _ordered_union_cols(df1: pd.DataFrame, df2: pd.DataFrame, key: str):
-    cols1 = list(df1.columns)
-    cols2 = list(df2.columns)
-    out = [c for c in cols1 if c != key]
-    for c in cols2:
-        if c == key:
-            continue
-        if c not in out:
-            out.append(c)
-    return out
-
-
-def _write_diff_side_by_side(ws, df1: pd.DataFrame, df2: pd.DataFrame, key: str, file1name: str, file2name: str):
+def _write_diff_side_by_side(ws, key: str, ordered_cols, left_rows: Optional[pd.DataFrame], right_rows: Optional[pd.DataFrame], diff_mask: Optional[pd.DataFrame], file1name: str, file2name: str):
     """
     变动项目：同主键两侧并列在同一行，并将不同的 cell 标红。
     列顺序：按 file1 原始顺序，再补 file2 新列（顺序保持不变）。
     """
-    if df1 is None or df2 is None or df1.empty or df2.empty:
-        ws.append(["无变动项目"])
-        return
-
-    # normalize key for stable alignment
-    df1_c = df1.copy()
-    df2_c = df2.copy()
-    df1_c[key] = df1_c[key].map(_normalize_scalar_for_compare)
-    df2_c[key] = df2_c[key].map(_normalize_scalar_for_compare)
-    df1_c = df1_c[df1_c[key].astype(str).str.strip() != ""]
-    df2_c = df2_c[df2_c[key].astype(str).str.strip() != ""]
-    df1_c = df1_c.drop_duplicates(subset=[key], keep="first").set_index(key)
-    df2_c = df2_c.drop_duplicates(subset=[key], keep="first").set_index(key)
-
-    common_idx = df1_c.index.intersection(df2_c.index)
-    if len(common_idx) == 0:
-        ws.append(["无变动项目"])
-        return
-
-    ordered_cols = _ordered_union_cols(df1, df2, key=key)
-    a = df1_c.loc[common_idx].reindex(columns=ordered_cols)
-    b = df2_c.loc[common_idx].reindex(columns=ordered_cols)
-
-    # fast diff to narrow down candidates
-    try:
-        diff_fast = a.ne(b)
-        both_na = a.isna() & b.isna()
-        diff_fast = diff_fast & (~both_na)
-        cand_rows = diff_fast.any(axis=1)
-        cand_cols = diff_fast.loc[cand_rows].any(axis=0) if cand_rows.any() else None
-    except Exception:
-        cand_rows = pd.Series(True, index=a.index)
-        cand_cols = None
-
-    if not cand_rows.any():
-        ws.append(["无变动项目"])
-        return
-
-    a_sub = a.loc[cand_rows]
-    b_sub = b.loc[cand_rows]
-
-    cols_to_check = ordered_cols
-    if cand_cols is not None and getattr(cand_cols, "any", lambda: False)():
-        _cols = [c for c, v in cand_cols.items() if bool(v)]
-        if _cols:
-            cols_to_check = _cols
-
-    a_cmp = a_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
-    b_cmp = b_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
-    diff_mask = a_cmp.ne(b_cmp)
-    rows_with_diff = diff_mask.any(axis=1)
-    if not rows_with_diff.any():
+    if left_rows is None or right_rows is None or diff_mask is None or left_rows.empty:
         ws.append(["无变动项目"])
         return
 
@@ -250,13 +188,13 @@ def _write_diff_side_by_side(ws, df1: pd.DataFrame, df2: pd.DataFrame, key: str,
     red_fill = PatternFill("solid", fgColor="FFFFC7CE")  # light red
     red_font = Font(color="FF9C0006")
 
-    keys = list(diff_mask.index[rows_with_diff])
+    keys = list(diff_mask.index)
     for k in keys:
         row = []
         row.append(WriteOnlyCell(ws, value=_safe_cell_value(k)))
         for c in ordered_cols:
-            va = _safe_cell_value(a_sub.at[k, c]) if c in a_sub.columns else ""
-            vb = _safe_cell_value(b_sub.at[k, c]) if c in b_sub.columns else ""
+            va = _safe_cell_value(left_rows.at[k, c]) if c in left_rows.columns else ""
+            vb = _safe_cell_value(right_rows.at[k, c]) if c in right_rows.columns else ""
             is_diff = False
             if c in diff_mask.columns:
                 try:

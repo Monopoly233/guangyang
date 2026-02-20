@@ -247,6 +247,46 @@ def compare_excel_tables_df(
     - increased_df：只在文件2（增加项）
     - different_df：同一主键内容不一致（两侧各一行，含 文件来源/不同列）
     """
+    reduced_df, increased_df, ordered_cols, left_rows, right_rows, diff_mask = compare_excel_tables_artifacts(df1, df2, key)
+    if diff_mask is None or left_rows is None or right_rows is None or left_rows.empty:
+        return reduced_df, increased_df, None
+
+    # 生成“不同列”列表：用 numpy 一次性聚合，避免逐行 apply(axis=1) 的 Python 循环开销。
+    import numpy as np  # pandas 依赖 numpy，这里按需导入
+
+    arr = diff_mask.to_numpy()
+    col_names = list(diff_mask.columns)
+    row_keys = list(diff_mask.index)
+    rpos, cpos = np.where(arr)
+    buckets = {k: [] for k in row_keys}
+    for i, j in zip(rpos.tolist(), cpos.tolist()):
+        buckets[row_keys[i]].append(col_names[j])
+    different_cols_series = pd.Series(buckets)
+
+    left_diff = left_rows.reset_index()
+    left_diff["文件来源"] = file1name
+    left_diff["不同列"] = left_diff[key].map(different_cols_series)
+
+    right_diff = right_rows.reset_index()
+    right_diff["文件来源"] = file2name
+    right_diff["不同列"] = right_diff[key].map(different_cols_series)
+
+    different_df = pd.concat([left_diff, right_diff], ignore_index=True)
+    return reduced_df, increased_df, different_df
+
+
+def compare_excel_tables_artifacts(
+    df1: pd.DataFrame,
+    df2: pd.DataFrame,
+    key: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    计算一次并返回导出/渲染需要的“对照信息”：
+    - reduced_df / increased_df：保持各自原文件列顺序
+    - ordered_cols：用于并列对照的字段顺序（按 df1，再补 df2 新列）
+    - left_rows/right_rows：仅包含有差异的主键行（index=key），列为 ordered_cols
+    - diff_mask：与 left_rows/right_rows 对齐的 bool mask（True 表示该字段两侧不同）
+    """
     # 保留原始列顺序（导出/展示时应与原文件一致）
     orig_cols1 = list(df1.columns)
     orig_cols2 = list(df2.columns)
@@ -259,9 +299,19 @@ def compare_excel_tables_df(
     df1_c = df1_c[df1_c[key].astype(str).str.strip() != ""]
     df2_c = df2_c[df2_c[key].astype(str).str.strip() != ""]
 
-    # 去重并设为索引
-    df1_c = df1_c.drop_duplicates(subset=[key], keep="first").set_index(key)
-    df2_c = df2_c.drop_duplicates(subset=[key], keep="first").set_index(key)
+    # 主键必须唯一：否则 drop_duplicates 会静默吞行，导致结果不准确
+    dup1 = df1_c[key].duplicated(keep=False)
+    if dup1.any():
+        keys = df1_c.loc[dup1, key].astype(str).head(10).tolist()
+        raise ValueError(f"文件1主键列“{key}”存在重复值（示例: {keys}），请先去重或修正后再比对")
+    dup2 = df2_c[key].duplicated(keep=False)
+    if dup2.any():
+        keys = df2_c.loc[dup2, key].astype(str).head(10).tolist()
+        raise ValueError(f"文件2主键列“{key}”存在重复值（示例: {keys}），请先去重或修正后再比对")
+
+    # 设为索引
+    df1_c = df1_c.set_index(key)
+    df2_c = df2_c.set_index(key)
 
     only1_idx = df1_c.index.difference(df2_c.index)
     only2_idx = df2_c.index.difference(df1_c.index)
@@ -269,29 +319,25 @@ def compare_excel_tables_df(
 
     reduced_df = df1_c.loc[only1_idx].reset_index()
     increased_df = df2_c.loc[only2_idx].reset_index()
-    # 结果表列顺序：尽量按各自原文件顺序排列
     if not reduced_df.empty:
         reduced_df = reduced_df.reindex(columns=[c for c in orig_cols1 if c in reduced_df.columns])
     if not increased_df.empty:
         increased_df = increased_df.reindex(columns=[c for c in orig_cols2 if c in increased_df.columns])
 
-    if len(common_idx) == 0:
-        return reduced_df, increased_df, None
-
-    a = df1_c.loc[common_idx]
-    b = df2_c.loc[common_idx]
-    # 列顺序：优先 file1 的列顺序，再补上 file2 中新增列（保持 file2 自身顺序）
-    all_cols = [c for c in orig_cols1 if c != key and c in set(a.columns) | set(b.columns)]
+    # ordered union columns (exclude key because it's index)
+    ordered_cols = [c for c in orig_cols1 if c != key and c in set(df1_c.columns) | set(df2_c.columns)]
     for c in orig_cols2:
         if c == key:
             continue
-        if c not in all_cols and c in set(a.columns) | set(b.columns):
-            all_cols.append(c)
-    a = a.reindex(columns=all_cols)
-    b = b.reindex(columns=all_cols)
+        if c not in ordered_cols and c in set(df1_c.columns) | set(df2_c.columns):
+            ordered_cols.append(c)
 
-    # 先用“快速比较”筛出疑似不同的行，避免对整个表逐单元格做 Python 归一化（非常慢）。
-    # 注意：NaN != NaN 的问题需要当成相等处理。
+    if len(common_idx) == 0:
+        return reduced_df, increased_df, ordered_cols, None, None, None
+
+    a = df1_c.loc[common_idx].reindex(columns=ordered_cols)
+    b = df2_c.loc[common_idx].reindex(columns=ordered_cols)
+
     diff_fast = None
     cand_cols = None
     try:
@@ -299,57 +345,37 @@ def compare_excel_tables_df(
         both_na = a.isna() & b.isna()
         diff_fast = diff_fast & (~both_na)
         cand_rows = diff_fast.any(axis=1)
-        # 进一步缩小“严格归一化”的列集合：只对疑似不同的列做归一化比较
         if cand_rows.any():
             cand_cols = diff_fast.loc[cand_rows].any(axis=0)
     except Exception:
-        # 兜底：如果遇到不可比对象导致向量化比较失败，就退回全量严格比较。
         cand_rows = pd.Series(True, index=a.index)
 
     if not cand_rows.any():
-        return reduced_df, increased_df, None
+        return reduced_df, increased_df, ordered_cols, None, None, None
 
     a_sub = a.loc[cand_rows]
     b_sub = b.loc[cand_rows]
 
-    # 对“疑似不同”的行再做严格归一化比较（避免空值/数字格式导致误判）
-    # 只归一化“疑似不同”的列，可显著减少 Python-level map 的次数。
     if cand_cols is not None and getattr(cand_cols, "any", lambda: False)():
         cols_to_check = [c for c, v in cand_cols.items() if bool(v)]
         if not cols_to_check:
-            cols_to_check = all_cols
+            cols_to_check = ordered_cols
     else:
-        cols_to_check = all_cols
+        cols_to_check = ordered_cols
 
     a_cmp = a_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
     b_cmp = b_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
-    diff_mask = a_cmp.ne(b_cmp)
-    rows_with_diff = diff_mask.any(axis=1)
+    diff_mask_check = a_cmp.ne(b_cmp)
+    rows_with_diff = diff_mask_check.any(axis=1)
     if not rows_with_diff.any():
-        return reduced_df, increased_df, None
+        return reduced_df, increased_df, ordered_cols, None, None, None
 
-    diff_rows = diff_mask.loc[rows_with_diff]
+    # Expand to full ordered_cols for downstream highlighting (cols not checked are treated as equal).
+    diff_mask = pd.DataFrame(False, index=diff_mask_check.index, columns=ordered_cols)
+    diff_mask.loc[:, cols_to_check] = diff_mask_check
 
-    # 生成“不同列”列表：用 numpy 一次性聚合，避免逐行 apply(axis=1) 的 Python 循环开销。
-    import numpy as np  # pandas 依赖 numpy，这里按需导入
-
-    arr = diff_rows.to_numpy()
-    col_names = list(diff_rows.columns)
-    row_keys = list(diff_rows.index)
-    rpos, cpos = np.where(arr)
-    buckets = {k: [] for k in row_keys}
-    for i, j in zip(rpos.tolist(), cpos.tolist()):
-        buckets[row_keys[i]].append(col_names[j])
-    different_cols_series = pd.Series(buckets)
-
-    left_diff = a_sub.loc[rows_with_diff].reset_index()
-    left_diff["文件来源"] = file1name
-    left_diff["不同列"] = left_diff[key].map(different_cols_series)
-
-    right_diff = b_sub.loc[rows_with_diff].reset_index()
-    right_diff["文件来源"] = file2name
-    right_diff["不同列"] = right_diff[key].map(different_cols_series)
-
-    different_df = pd.concat([left_diff, right_diff], ignore_index=True)
-    return reduced_df, increased_df, different_df
+    left_rows = a_sub.loc[rows_with_diff]
+    right_rows = b_sub.loc[rows_with_diff]
+    diff_mask = diff_mask.loc[rows_with_diff]
+    return reduced_df, increased_df, ordered_cols, left_rows, right_rows, diff_mask
 
