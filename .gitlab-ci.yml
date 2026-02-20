@@ -73,6 +73,7 @@ deploy_ack:
     - mkdir -p "$HOME/.kube"
     - echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
     - chmod 600 "$HOME/.kube/config"
+    - export KUBECONFIG="$HOME/.kube/config"
 
     - echo "======== [2/4] 检查 kubectl ========"
     - |
@@ -88,3 +89,13 @@ deploy_ack:
     - echo "======== [4/4] 部署到 ACK ========"
     - kubectl apply -f k8s/
     - kubectl -n gy get deploy,svc,pod
+    - |
+      # 若 Pod 处于 Pending，自动输出调度事件，方便定位（资源不足/污点/节点未就绪等）
+      pending="$(kubectl -n gy get pod --no-headers 2>/dev/null | awk '$3=="Pending"{print $1}' || true)"
+      if [ -n "$pending" ]; then
+        echo "======== Pending Pods Events ========"
+        for p in $pending; do
+          echo "--- describe pod/$p (events) ---"
+          kubectl -n gy describe pod "$p" | sed -n '/^Events:/,$p' || true
+        done
+      fi
