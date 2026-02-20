@@ -14,12 +14,14 @@ COPY . .
 RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 
 # Runtime: LibreOffice for .xls conversion
-FROM debian:bookworm-slim
+# Use full bookworm image to avoid outdated keyring issues on some runners.
+FROM debian:bookworm
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+      debian-archive-keyring \
       ca-certificates \
       python3 \
       python3-uno \
