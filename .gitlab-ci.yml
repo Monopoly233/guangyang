@@ -173,7 +173,19 @@ deploy_ack:
         fi
         zip_path=""
         if [ -n "${WECHAT_MERCHANT_CERT_ZIP_FILE:-}" ]; then
-          zip_path="$WECHAT_MERCHANT_CERT_ZIP_FILE"
+          zip_in="$WECHAT_MERCHANT_CERT_ZIP_FILE"
+          zip_out="$tmpdir_files/$WECHAT_MERCHANT_CERT_ZIP_NAME"
+          # 兼容两种用法：
+          # - File 变量内容是“原始 zip（二进制）”
+          # - File 变量内容是“base64(zip) 文本”（很多人会这么存）
+          if dd if="$zip_in" bs=1 count=2 2>/dev/null | grep -q "PK"; then
+            zip_path="$zip_in"
+          elif base64 -d < "$zip_in" > "$zip_out" 2>/dev/null && dd if="$zip_out" bs=1 count=2 2>/dev/null | grep -q "PK"; then
+            zip_path="$zip_out"
+          else
+            echo "ERROR: WECHAT_MERCHANT_CERT_ZIP_FILE 既不是 zip（二进制，PK 开头），也不是 base64(zip)。" >&2
+            exit 1
+          fi
         else
           zip_path="$tmpdir_files/$WECHAT_MERCHANT_CERT_ZIP_NAME"
           echo "$WECHAT_MERCHANT_CERT_ZIP_B64" | base64 -d > "$zip_path"
@@ -183,23 +195,86 @@ deploy_ack:
       fi
       if [ -n "${WECHAT_MERCHANT_KEY_PEM_FILE:-}" ]; then
         wechatpay_any_file=1
-        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_key.pem=$WECHAT_MERCHANT_KEY_PEM_FILE"
+        key_in="$WECHAT_MERCHANT_KEY_PEM_FILE"
+        key_out="$tmpdir_files/merchant_key.pem"
+        if grep -q "BEGIN " "$key_in" 2>/dev/null; then
+          key_path="$key_in"
+        elif base64 -d < "$key_in" > "$key_out" 2>/dev/null && grep -q "BEGIN " "$key_out" 2>/dev/null; then
+          key_path="$key_out"
+        else
+          key_path="$key_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_key.pem=$key_path"
       fi
       if [ -n "${WECHAT_MERCHANT_CERT_PEM_FILE:-}" ]; then
         wechatpay_any_file=1
-        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_cert.pem=$WECHAT_MERCHANT_CERT_PEM_FILE"
+        cert_in="$WECHAT_MERCHANT_CERT_PEM_FILE"
+        cert_out="$tmpdir_files/merchant_cert.pem"
+        if grep -q "BEGIN CERTIFICATE" "$cert_in" 2>/dev/null; then
+          cert_path="$cert_in"
+        elif base64 -d < "$cert_in" > "$cert_out" 2>/dev/null && grep -q "BEGIN CERTIFICATE" "$cert_out" 2>/dev/null; then
+          cert_path="$cert_out"
+        else
+          cert_path="$cert_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_cert.pem=$cert_path"
       fi
       if [ -n "${WECHAT_PLATFORM_CERT_PEM_FILE:-}" ]; then
         wechatpay_any_file=1
-        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=platform_cert.pem=$WECHAT_PLATFORM_CERT_PEM_FILE"
+        pc_in="$WECHAT_PLATFORM_CERT_PEM_FILE"
+        pc_out="$tmpdir_files/platform_cert.pem"
+        if grep -q "BEGIN CERTIFICATE" "$pc_in" 2>/dev/null; then
+          pc_path="$pc_in"
+        elif base64 -d < "$pc_in" > "$pc_out" 2>/dev/null && grep -q "BEGIN CERTIFICATE" "$pc_out" 2>/dev/null; then
+          pc_path="$pc_out"
+        else
+          pc_path="$pc_in"
+        fi
+        # 快速校验：证书需要 BEGIN+END
+        if grep -q "BEGIN CERTIFICATE" "$pc_path" 2>/dev/null && ! grep -q "END CERTIFICATE" "$pc_path" 2>/dev/null; then
+          echo "ERROR: platform_cert.pem 不完整（缺少 END CERTIFICATE）。你很可能塞的是 base64 文本或内容被截断。" >&2
+          exit 1
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=platform_cert.pem=$pc_path"
       fi
       if [ -n "${WECHAT_PUB_KEY_PEM_FILE:-}" ]; then
         wechatpay_any_file=1
-        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=pub_key.pem=$WECHAT_PUB_KEY_PEM_FILE"
+        pub_in="$WECHAT_PUB_KEY_PEM_FILE"
+        pub_out="$tmpdir_files/pub_key.pem"
+        if grep -q "BEGIN PUBLIC KEY" "$pub_in" 2>/dev/null || grep -q "BEGIN CERTIFICATE" "$pub_in" 2>/dev/null; then
+          pub_path="$pub_in"
+        elif base64 -d < "$pub_in" > "$pub_out" 2>/dev/null && (grep -q "BEGIN PUBLIC KEY" "$pub_out" 2>/dev/null || grep -q "BEGIN CERTIFICATE" "$pub_out" 2>/dev/null); then
+          pub_path="$pub_out"
+        else
+          pub_path="$pub_in"
+        fi
+        # 快速校验：公钥/证书需要 BEGIN+END
+        if grep -q "BEGIN PUBLIC KEY" "$pub_path" 2>/dev/null && ! grep -q "END PUBLIC KEY" "$pub_path" 2>/dev/null; then
+          echo "ERROR: pub_key.pem 不完整（缺少 END PUBLIC KEY）。" >&2
+          exit 1
+        fi
+        if grep -q "BEGIN CERTIFICATE" "$pub_path" 2>/dev/null && ! grep -q "END CERTIFICATE" "$pub_path" 2>/dev/null; then
+          echo "ERROR: pub_key.pem 看起来是证书但不完整（缺少 END CERTIFICATE）。" >&2
+          exit 1
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=pub_key.pem=$pub_path"
       fi
       if [ -n "${WECHAT_CERT_TXT_FILE:-}" ]; then
         wechatpay_any_file=1
-        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=cert.txt=$WECHAT_CERT_TXT_FILE"
+        txt_in="$WECHAT_CERT_TXT_FILE"
+        txt_out="$tmpdir_files/cert.txt"
+        # cert.txt usually is plain text; if user stored it as base64, decode to keep the original.
+        if base64 -d < "$txt_in" > "$txt_out" 2>/dev/null; then
+          # Heuristic: decoded text should contain something meaningful (pem header or readable ascii)
+          if grep -q "BEGIN " "$txt_out" 2>/dev/null || grep -Eq "[A-Za-z0-9]" "$txt_out" 2>/dev/null; then
+            txt_path="$txt_out"
+          else
+            txt_path="$txt_in"
+          fi
+        else
+          txt_path="$txt_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=cert.txt=$txt_path"
       fi
 
       if [ "$wechatpay_any_file" = "1" ]; then

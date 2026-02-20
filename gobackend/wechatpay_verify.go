@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -114,6 +115,7 @@ func (v *wechatpayVerifier) Verify(h http.Header, body []byte) error {
 }
 
 func parseRSAPublicKeyFromPEM(pemText string) (*rsa.PublicKey, error) {
+	orig := pemText
 	pemText = strings.TrimSpace(pemText)
 	// Common CI/env pitfalls:
 	// - wrapped by quotes
@@ -136,9 +138,16 @@ func parseRSAPublicKeyFromPEM(pemText string) (*rsa.PublicKey, error) {
 	b := []byte(pemText)
 	block, _ := pem.Decode(b)
 	if block == nil {
+		diag := describeWechatPlatformKeyInput(orig, pemText)
 		// As a last resort: if user provided the base64 body without PEM header/footer,
 		// try decoding it as DER and parsing as public key/cert.
-		if der, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pemText)); err == nil && len(der) > 0 {
+		compact := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(pemText), "\n", ""), " ", "")
+		if der, err := base64.StdEncoding.DecodeString(compact); err == nil && len(der) > 0 {
+			// Very common: user base64-encoded the whole PEM file and put it into a variable / File var.
+			// In that case, decoding yields bytes starting with "-----BEGIN ...-----".
+			if s := strings.TrimSpace(string(der)); strings.HasPrefix(s, "-----BEGIN ") {
+				return nil, fmt.Errorf("无法解析 PEM：输入看起来是【PEM 文件整体的 base64】；请先 base64 -d 得到原始 PEM 再注入（或在 CI 中解码后以文件方式挂载）。diag=%s", diag)
+			}
 			if pubAny, err2 := x509.ParsePKIXPublicKey(der); err2 == nil {
 				if pub, ok := pubAny.(*rsa.PublicKey); ok && pub != nil {
 					return pub, nil
@@ -152,7 +161,7 @@ func parseRSAPublicKeyFromPEM(pemText string) (*rsa.PublicKey, error) {
 				return nil, errors.New("证书公钥不是 RSA")
 			}
 		}
-		return nil, errors.New("无法解析 PEM")
+		return nil, fmt.Errorf("无法解析 PEM。diag=%s", diag)
 	}
 	// Try PKIX first.
 	if pubAny, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
@@ -169,5 +178,28 @@ func parseRSAPublicKeyFromPEM(pemText string) (*rsa.PublicKey, error) {
 		return nil, errors.New("证书公钥不是 RSA")
 	}
 	return nil, errors.New("无法解析 RSA 公钥")
+}
+
+func describeWechatPlatformKeyInput(orig string, normalized string) string {
+	// Do NOT log the key content; only emit structural hints.
+	o := strings.TrimSpace(orig)
+	n := strings.TrimSpace(normalized)
+	hasBeginPub := strings.Contains(n, "-----BEGIN PUBLIC KEY-----")
+	hasEndPub := strings.Contains(n, "-----END PUBLIC KEY-----")
+	hasBeginCert := strings.Contains(n, "-----BEGIN CERTIFICATE-----")
+	hasEndCert := strings.Contains(n, "-----END CERTIFICATE-----")
+	hasRealNL := strings.Contains(o, "\n") || strings.Contains(o, "\r\n")
+	hasEscNL := strings.Contains(o, `\n`) || strings.Contains(o, `\\n`)
+	looksB64Pem := false
+	// If base64 decode succeeds and decoded starts with PEM header, it's almost certainly base64(PEM file).
+	compact := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(o), "\n", ""), " ", "")
+	if der, err := base64.StdEncoding.DecodeString(compact); err == nil && len(der) > 0 {
+		if strings.HasPrefix(strings.TrimSpace(string(der)), "-----BEGIN ") {
+			looksB64Pem = true
+		}
+	}
+	sum := sha256.Sum256([]byte(n))
+	return fmt.Sprintf("origLen=%d normLen=%d beginPub=%t endPub=%t beginCert=%t endCert=%t hasRealNewline=%t hasEscapedNewline=%t looksBase64OfPem=%t sha256=%s",
+		len(o), len(n), hasBeginPub, hasEndPub, hasBeginCert, hasEndCert, hasRealNL, hasEscNL, looksB64Pem, hex.EncodeToString(sum[:]))
 }
 

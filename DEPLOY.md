@@ -70,3 +70,46 @@ Go 端会从挂载的 `wechatpay/` 目录读取：
 
 注意：你目前仓库里是 `cert.zip`，需要在服务器上解压/导出成上述 pem 文件名。
 
+---
+
+## ACK / Kubernetes 部署：GitLab Variables 注入微信支付文件（推荐）
+
+你现在的 ACK 部署会在 `deploy_ack` 阶段：
+
+- 创建/更新 `gy/wechatpay-env`（短文本环境变量）
+- 创建/更新 `gy/wechatpay-cert`（证书/密钥文件），并挂载到 Go 容器 `/app/wechatpay/cert`
+
+### GitLab Variables 怎么“塞文件”
+
+- **Type=File 不是上传文件**：它是把你粘贴到 Value 的内容在 Job 运行时写成临时文件，变量值是该文件路径。
+- 你如果习惯先把文件做 **base64** 再粘贴到 File 变量，也可以；流水线会尝试自动 `base64 -d` 回原文件（并在注入前做 BEGIN/END 校验，失败会给出明确错误）。
+
+### 建议配置的变量
+
+#### A) 短文本（Type=Variable）
+
+- `WECHAT_NOTIFY_URL`
+- `WECHAT_MCHID`
+- `WECHAT_PAY_APPID`
+- `WECHAT_API_V3_KEY`
+- `WECHAT_PLATFORM_PUBLIC_KEY_ID`（可选）
+- `WECHAT_MOCK`（可选）
+
+#### B) 文件（Type=File）
+
+- `WECHAT_PUB_KEY_PEM_FILE`：平台公钥 `pub_key.pem`（完整 PEM，含 BEGIN/END）
+- `WECHAT_PLATFORM_CERT_PEM_FILE`：平台证书 `platform_cert.pem`（可选，证书模式）
+- `WECHAT_CERT_TXT_FILE`：`cert.txt`（可选，仅排查/兼容）
+
+#### C) 商户证书 zip（二选一）
+
+推荐用 base64 变量（Type=Variable）：
+
+- `WECHAT_MERCHANT_CERT_ZIP_NAME`：`<mchid>_YYYYMMDD_cert.zip`
+- `WECHAT_MERCHANT_CERT_ZIP_B64`：zip 的 base64（单行）
+
+也支持你把 zip 的 base64 粘贴进 File 变量（Type=File）：
+
+- `WECHAT_MERCHANT_CERT_ZIP_FILE`
+- `WECHAT_MERCHANT_CERT_ZIP_NAME`
+
