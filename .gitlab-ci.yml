@@ -136,8 +136,18 @@ deploy_ack:
         extra=()
         if [ -n "${WECHAT_PLATFORM_PUBLIC_KEY_B64:-}" ]; then
           echo "$WECHAT_PLATFORM_PUBLIC_KEY_B64" | base64 -d > "$tmpdir/platform_public_key.pem"
-          # 必须是 PEM（公钥或证书都行），否则 Go 端 pem.Decode 会失败
-          if ! grep -q "BEGIN PUBLIC KEY" "$tmpdir/platform_public_key.pem" && ! grep -q "BEGIN CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
+          # 必须是完整 PEM（需要 BEGIN+END），否则 Go 端 pem.Decode 会失败
+          if grep -q "BEGIN PUBLIC KEY" "$tmpdir/platform_public_key.pem"; then
+            if ! grep -q "END PUBLIC KEY" "$tmpdir/platform_public_key.pem"; then
+              echo "ERROR: 平台公钥 PEM 不完整：缺少 '-----END PUBLIC KEY-----'。请 base64 完整 pem 文件（包含头尾）。" >&2
+              exit 1
+            fi
+          elif grep -q "BEGIN CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
+            if ! grep -q "END CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
+              echo "ERROR: 平台证书 PEM 不完整：缺少 '-----END CERTIFICATE-----'。请 base64 完整 pem 文件（包含头尾）。" >&2
+              exit 1
+            fi
+          else
             echo "ERROR: WECHAT_PLATFORM_PUBLIC_KEY_B64 解码后不是 PEM（缺少 BEGIN PUBLIC KEY / BEGIN CERTIFICATE）。请确保你 base64 的是完整 pem 文件（包含头尾），而不是中间那段 base64。" >&2
             exit 1
           fi
@@ -151,9 +161,19 @@ deploy_ack:
           else
             printf "%s" "$WECHAT_PLATFORM_PUBLIC_KEY" > "$tmpdir/platform_public_key.pem"
           fi
-          # 必须是 PEM（公钥或证书都行），否则 Go 端 pem.Decode 会失败
-          if ! grep -q "BEGIN PUBLIC KEY" "$tmpdir/platform_public_key.pem" && ! grep -q "BEGIN CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
-            echo "ERROR: WECHAT_PLATFORM_PUBLIC_KEY 不是 PEM（缺少 BEGIN PUBLIC KEY / BEGIN CERTIFICATE）。请提供完整 PEM（含头尾），或改用 WECHAT_PLATFORM_PUBLIC_KEY_B64。" >&2
+          # 必须是完整 PEM（需要 BEGIN+END），否则 Go 端 pem.Decode 会失败
+          if grep -q "BEGIN PUBLIC KEY" "$tmpdir/platform_public_key.pem"; then
+            if ! grep -q "END PUBLIC KEY" "$tmpdir/platform_public_key.pem"; then
+              echo "ERROR: WECHAT_PLATFORM_PUBLIC_KEY 不完整：缺少 '-----END PUBLIC KEY-----'。请提供完整 PEM（含头尾），或改用 File 变量 / WECHAT_PLATFORM_PUBLIC_KEY_B64。" >&2
+              exit 1
+            fi
+          elif grep -q "BEGIN CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
+            if ! grep -q "END CERTIFICATE" "$tmpdir/platform_public_key.pem"; then
+              echo "ERROR: WECHAT_PLATFORM_PUBLIC_KEY 不完整：缺少 '-----END CERTIFICATE-----'。请提供完整 PEM（含头尾），或改用 File 变量 / WECHAT_PLATFORM_PUBLIC_KEY_B64。" >&2
+              exit 1
+            fi
+          else
+            echo "ERROR: WECHAT_PLATFORM_PUBLIC_KEY 不是 PEM（缺少 BEGIN PUBLIC KEY / BEGIN CERTIFICATE）。请提供完整 PEM（含头尾），或改用 File 变量 / WECHAT_PLATFORM_PUBLIC_KEY_B64。" >&2
             exit 1
           fi
           extra+=(--from-file="WECHAT_PLATFORM_PUBLIC_KEY=$tmpdir/platform_public_key.pem")
