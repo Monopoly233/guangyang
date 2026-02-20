@@ -27,15 +27,65 @@ spec:
               value: "http://python:8000"
             - name: CORS_ALLOW_ORIGIN
               value: "*"
-            # 先不接入支付/证书：默认 compare 费用为 0，不会走微信下单；
-            # 验证 ALB 路由时可以先 GET /wechatpay/notify 看 405（不会触发验签配置读取）
             - name: COMPARE_JOB_FEE_FEN
-              value: "0"
+              value: "1"
             - name: TMP_ROOT
               value: "/app/tmp"
+            # WeChatPay（真实支付测试时需要注入）
+            - name: WECHAT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_NOTIFY_URL
+                  optional: true
+            - name: WECHAT_MCHID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MCHID
+                  optional: true
+            - name: WECHAT_PAY_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PAY_APPID
+                  optional: true
+            - name: WECHAT_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_APPID
+                  optional: true
+            - name: WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_API_V3_KEY
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY_ID
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY
+                  optional: true
+            - name: WECHAT_MOCK
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MOCK
+                  optional: true
           volumeMounts:
             - name: tmp
               mountPath: /app/tmp
+            - name: wechatpay-cert
+              mountPath: /app/wechatpay/cert
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -58,6 +108,10 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: wechatpay-cert
+          secret:
+            secretName: wechatpay-cert
+            optional: true
 ---
 apiVersion: v1
 kind: Service

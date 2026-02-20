@@ -16,6 +16,9 @@ variables:
   ACR_NAMESPACE: guangyang
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
 
+  # 0.01 元 = 1 分（可在 GitLab Variables 覆盖）
+  COMPARE_JOB_FEE_FEN: "1"
+
 stages:
   - build_push
   - deploy
@@ -115,6 +118,62 @@ deploy_ack:
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
       kubectl -n gy set image deploy/python python="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
       kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
+
+    - echo "======== (post) 注入计费/微信支付配置（来自 GitLab Variables） ========"
+    - |
+      # 1) 强制 compare 费用（分）
+      kubectl -n gy set env deploy/go "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null || true
+
+      # 2) WeChatPay 运行时环境变量（建议在 GitLab -> CI/CD Variables 配置）
+      # 必填通常至少包括：WECHAT_NOTIFY_URL / WECHAT_MCHID / WECHAT_PAY_APPID / WECHAT_API_V3_KEY
+      # 平台验签材料二选一：
+      # - WECHAT_PLATFORM_PUBLIC_KEY_B64（推荐，base64 后的 PEM 公钥） + 可选 WECHAT_PLATFORM_PUBLIC_KEY_ID
+      # - 或通过 wechatpay-cert secret 提供 platform_cert.pem
+      if [ -n "${WECHAT_NOTIFY_URL:-}" ] && [ -n "${WECHAT_MCHID:-}" ] && [ -n "${WECHAT_PAY_APPID:-}" ] && [ -n "${WECHAT_API_V3_KEY:-}" ]; then
+        tmpdir="$(mktemp -d)"
+        extra=()
+        if [ -n "${WECHAT_PLATFORM_PUBLIC_KEY_B64:-}" ]; then
+          echo "$WECHAT_PLATFORM_PUBLIC_KEY_B64" | base64 -d > "$tmpdir/platform_public_key.pem"
+          extra+=(--from-file="WECHAT_PLATFORM_PUBLIC_KEY=$tmpdir/platform_public_key.pem")
+        fi
+        kubectl -n gy create secret generic wechatpay-env \
+          --from-literal="WECHAT_NOTIFY_URL=$WECHAT_NOTIFY_URL" \
+          --from-literal="WECHAT_MCHID=$WECHAT_MCHID" \
+          --from-literal="WECHAT_PAY_APPID=$WECHAT_PAY_APPID" \
+          --from-literal="WECHAT_APPID=${WECHAT_APPID:-}" \
+          --from-literal="WECHAT_API_V3_KEY=$WECHAT_API_V3_KEY" \
+          --from-literal="WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}" \
+          --from-literal="WECHAT_MOCK=${WECHAT_MOCK:-0}" \
+          "${extra[@]}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      else
+        echo "skip wechatpay-env: required vars missing (set WECHAT_NOTIFY_URL/WECHAT_MCHID/WECHAT_PAY_APPID/WECHAT_API_V3_KEY)"
+      fi
+
+      # 3) WeChatPay 证书/私钥（推荐用 base64 单行变量，避免 masked 变量限制）
+      # - WECHAT_MERCHANT_KEY_PEM_B64
+      # - WECHAT_MERCHANT_CERT_PEM_B64
+      # 可选：
+      # - WECHAT_PLATFORM_CERT_PEM_B64（如果你走平台证书模式验签）
+      if [ -n "${WECHAT_MERCHANT_KEY_PEM_B64:-}" ] && [ -n "${WECHAT_MERCHANT_CERT_PEM_B64:-}" ]; then
+        tmpdir="$(mktemp -d)"
+        echo "$WECHAT_MERCHANT_KEY_PEM_B64" | base64 -d > "$tmpdir/merchant_key.pem"
+        echo "$WECHAT_MERCHANT_CERT_PEM_B64" | base64 -d > "$tmpdir/merchant_cert.pem"
+        cert_args=(--from-file="merchant_key.pem=$tmpdir/merchant_key.pem" --from-file="merchant_cert.pem=$tmpdir/merchant_cert.pem")
+        if [ -n "${WECHAT_PLATFORM_CERT_PEM_B64:-}" ]; then
+          echo "$WECHAT_PLATFORM_CERT_PEM_B64" | base64 -d > "$tmpdir/platform_cert.pem"
+          cert_args+=(--from-file="platform_cert.pem=$tmpdir/platform_cert.pem")
+        fi
+        kubectl -n gy create secret generic wechatpay-cert \
+          "${cert_args[@]}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      else
+        echo "skip wechatpay-cert: set WECHAT_MERCHANT_KEY_PEM_B64 + WECHAT_MERCHANT_CERT_PEM_B64 to mount /app/wechatpay/cert"
+      fi
+
+      # Secret 更新不会热加载到容器环境变量，显式滚动一次确保生效
+      kubectl -n gy rollout restart deploy/go >/dev/null || true
+
       kubectl -n gy rollout status deploy/go --timeout=180s
       kubectl -n gy rollout status deploy/python --timeout=180s
       kubectl -n gy rollout status deploy/web --timeout=180s

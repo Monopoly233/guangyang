@@ -69,3 +69,15 @@ curl -sS http://127.0.0.1:18080/healthz
 - 你可以先用 **GET** 请求访问 `/wechatpay/notify` 验证路由（会返回 405，不会触发验签/解密配置读取）。
 - 真正接入微信回调（POST）需要配置 `WECHAT_API_V3_KEY` + 平台验签材料（平台公钥或平台证书）。
 
+如需在 ACK 上做真实支付联调（例如把 compare 费用设为 0.01 元）：
+
+1. 按模板创建 Secret（不要把真实密钥提交到 git）：
+   - `k8s/16-wechatpay-secrets.template.yaml`（`wechatpay-env` + `wechatpay-cert`）
+2. 确保 `gy/go` Deployment 已挂载 `/app/wechatpay/cert` 且能读到：
+   - `merchant_key.pem`、`merchant_cert.pem`
+   - 平台验签材料二选一：
+     - `platform_cert.pem`（放入 `wechatpay-cert`），或
+     - 配置 `WECHAT_PLATFORM_PUBLIC_KEY`（以及对应的 `WECHAT_PLATFORM_PUBLIC_KEY_ID`）
+3. 确保回调域名路由到 Go：
+   - `https://pay.guangyang.online/wechatpay/notify` → Ingress 已配置到 `svc/go:8080`
+
