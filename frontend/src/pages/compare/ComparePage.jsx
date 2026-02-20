@@ -163,20 +163,53 @@ class ComparePage extends React.Component {
   fetchAndPreview = async (jobId) => {
     this.setState({ loading: true, error: undefined });
     try {
-      const { blob, filename, directUrl } = await downloadCompareExport(jobId);
+      const { blob, filename, directUrl, contentType, finalUrl } = await downloadCompareExport(jobId);
       const ab = await blob.arrayBuffer();
-      const wb = XLSX.read(ab, { type: "array" });
-      const previewSheets = wb.SheetNames.map((name) => {
-        const ws = wb.Sheets[name];
-        const html = XLSX.utils.sheet_to_html(ws, { header: "", footer: "" });
-        return { name, html };
-      });
+
+      // xlsx is a zip file, should start with "PK" (0x50 0x4b).
+      const u8 = new Uint8Array(ab.slice(0, 2));
+      const isZip = u8.length === 2 && u8[0] === 0x50 && u8[1] === 0x4b;
+      if (!isZip) {
+        const ct = (contentType || "").trim();
+        const hint = ct && !ct.includes("spreadsheet") ? `（Content-Type: ${ct}）` : "";
+        // Keep download link but skip preview to avoid xlsx library crashing.
+        const prev = this.state.lastExport;
+        if (prev && prev.url) URL.revokeObjectURL(prev.url);
+        const url = URL.createObjectURL(blob);
+        this.setState({
+          previewSheets: [],
+          lastExport: { blob, filename: filename || "comparison_result.xlsx", url, directUrl: finalUrl || directUrl },
+          error: `下载到的内容不是有效的 xlsx${hint}。请点击“下载结果文件”查看（通常是后端/OSS 返回了错误页面）。`,
+        });
+        return;
+      }
+
+      let previewSheets = [];
+      try {
+        const wb = XLSX.read(ab, { type: "array" });
+        previewSheets = wb.SheetNames.map((name) => {
+          const ws = wb.Sheets[name];
+          const html = XLSX.utils.sheet_to_html(ws, { header: "", footer: "" });
+          return { name, html };
+        });
+      } catch (err) {
+        // Keep download link but skip preview if parsing fails.
+        const prev = this.state.lastExport;
+        if (prev && prev.url) URL.revokeObjectURL(prev.url);
+        const url = URL.createObjectURL(blob);
+        this.setState({
+          previewSheets: [],
+          lastExport: { blob, filename: filename || "comparison_result.xlsx", url, directUrl: finalUrl || directUrl },
+          error: err?.message || "预览解析失败（但你仍可直接下载结果文件）",
+        });
+        return;
+      }
 
       const prev = this.state.lastExport;
       if (prev && prev.url) URL.revokeObjectURL(prev.url);
 
       const url = URL.createObjectURL(blob);
-      this.setState({ previewSheets, lastExport: { blob, filename: filename || "comparison_result.xlsx", url, directUrl } });
+      this.setState({ previewSheets, lastExport: { blob, filename: filename || "comparison_result.xlsx", url, directUrl: finalUrl || directUrl } });
     } finally {
       this.setState({ loading: false });
     }
@@ -215,6 +248,18 @@ class ComparePage extends React.Component {
   };
 
   render() {
+    const status = this.state.jobStatus;
+    const hasJob = !!this.state.jobId;
+    const isTerminal = status === "ready" || status === "failed" || status === "cancelled";
+    // If there's an active job and it's not terminal yet, keep the action button disabled.
+    const jobInProgress = hasJob && !isTerminal;
+    const startDisabled = !!this.state.loading || jobInProgress;
+    const startLabel = this.state.loading
+      ? "处理中..."
+      : jobInProgress
+        ? (status === "awaiting_payment" ? "等待支付..." : "比对中...")
+        : "开始比对";
+
     return (
       <div>
         <Header />
@@ -260,7 +305,7 @@ class ComparePage extends React.Component {
                   // loading 由轮询/下载阶段驱动
                   this.setState({ loading: false });
                 }
-              }} disabled={this.state.loading}>{this.state.loading ? "处理中..." : "开始比对"}</button>
+              }} disabled={startDisabled}>{startLabel}</button>
               <button onClick={(e) => {
                 e.preventDefault();
                 const le = this.state.lastExport;
