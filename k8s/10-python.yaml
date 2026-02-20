@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: python
-          image: guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/python:latest
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/python:latest
           imagePullPolicy: Always
           ports:
             - name: http

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/web:latest
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/web:latest
           imagePullPolicy: Always
           ports:
             - name: http

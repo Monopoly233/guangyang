@@ -87,14 +87,33 @@ deploy_ack:
     - kubectl get nodes
 
     - echo "======== [4/4] 部署到 ACK ========"
+    - echo "======== (pre) 配置 ACR 拉取凭据 ========"
+    - |
+      # 为 namespace gy 配置 imagePullSecret，解决 ACR 私有仓库 ImagePullBackOff
+      # 注意：镜像地址使用 *-vpc 域名时，secret 的 docker-server 也必须一致
+      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      if ! kubectl get ns gy >/dev/null 2>&1; then
+        kubectl apply -f k8s/00-namespace.yaml
+      fi
+      if ! kubectl -n gy get secret acr-pull >/dev/null 2>&1; then
+        test -n "${ACR_USERNAME:-}"
+        test -n "${ACR_PASSWORD:-}"
+        kubectl -n gy create secret docker-registry acr-pull \
+          --docker-server="$ACR_PULL_REGISTRY" \
+          --docker-username="$ACR_USERNAME" \
+          --docker-password="$ACR_PASSWORD"
+      fi
+      kubectl -n gy patch serviceaccount default \
+        -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' >/dev/null || true
+
     - kubectl apply -f k8s/
     - kubectl -n gy get deploy,svc,pod
     - |
       # 若 Pod 处于 Pending，自动输出调度事件，方便定位（资源不足/污点/节点未就绪等）
-      pending="$(kubectl -n gy get pod --no-headers 2>/dev/null | awk '$3=="Pending"{print $1}' || true)"
-      if [ -n "$pending" ]; then
-        echo "======== Pending Pods Events ========"
-        for p in $pending; do
+      bad="$(kubectl -n gy get pod --no-headers 2>/dev/null | awk '$3=="Pending"||$3=="ImagePullBackOff"||$3=="ErrImagePull"{print $1}' || true)"
+      if [ -n "$bad" ]; then
+        echo "======== Pod Events (Pending/ImagePullBackOff) ========"
+        for p in $bad; do
           echo "--- describe pod/$p (events) ---"
           kubectl -n gy describe pod "$p" | sed -n '/^Events:/,$p' || true
         done
