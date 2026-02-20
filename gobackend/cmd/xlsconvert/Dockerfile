@@ -1,3 +1,5 @@
+ARG XLSCONVERT_RUNTIME_BASE=ghcr.io/unoconv/unoserver-docker:0.4.4
+
 FROM golang:1.24.3-alpine AS build
 
 WORKDIR /src
@@ -16,7 +18,6 @@ RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 # Runtime: LibreOffice for .xls conversion
 # Use prebuilt image to avoid apt instability in CI.
 # Includes LibreOffice + unoserver + unoconvert + lots of fonts.
-ARG XLSCONVERT_RUNTIME_BASE=ghcr.io/unoconv/unoserver-docker:latest
 FROM ${XLSCONVERT_RUNTIME_BASE}
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
