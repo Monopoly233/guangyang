@@ -13,6 +13,7 @@ spec:
       labels:
         app: go
     spec:
+      serviceAccountName: go-sa
       containers:
         - name: go
           image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
