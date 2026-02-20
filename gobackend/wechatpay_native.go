@@ -47,6 +47,9 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 	if mchID == "" {
 		return "", errors.New("缺少 WECHAT_MCHID")
 	}
+	if !isValidWechatMchID(mchID) {
+		return "", fmt.Errorf("WECHAT_MCHID 非法：%q（必须是纯数字直连商户号，不能用 1106xxxx 这种占位符）", mchID)
+	}
 	if appID == "" {
 		return "", errors.New("缺少 WECHAT_PAY_APPID（或兼容读取 WECHAT_APPID）")
 	}
@@ -114,6 +117,9 @@ func closeWechatNativeOrder(outTradeNo string) error {
 	if mchID == "" {
 		return errors.New("缺少 WECHAT_MCHID")
 	}
+	if !isValidWechatMchID(mchID) {
+		return fmt.Errorf("WECHAT_MCHID 非法：%q（必须是纯数字直连商户号）", mchID)
+	}
 
 	merchantKeyPath, merchantCertPath, _, err := resolveWechatpayCertPaths()
 	if err != nil {
@@ -138,6 +144,23 @@ func closeWechatNativeOrder(outTradeNo string) error {
 	})
 
 	return wechatpayPostCloseOutTradeNo(mchID, merchantSerial, merchantPrivateKey, outTradeNo, bodyBytes)
+}
+
+func isValidWechatMchID(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		if i == 0 && c == '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPrivateKey *rsa.PrivateKey, verifier *wechatpayVerifier, body []byte) (string, error) {
