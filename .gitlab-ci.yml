@@ -159,7 +159,10 @@ deploy_ack:
       # 可选：
       # - WECHAT_PLATFORM_CERT_PEM_B64（如果你走平台证书模式验签）
       if [ -n "${WECHAT_MERCHANT_CERT_ZIP_B64:-}" ]; then
-        test -n "${WECHAT_MERCHANT_CERT_ZIP_NAME:-}"
+        if [ -z "${WECHAT_MERCHANT_CERT_ZIP_NAME:-}" ]; then
+          echo "ERROR: 已设置 WECHAT_MERCHANT_CERT_ZIP_B64，但缺少 WECHAT_MERCHANT_CERT_ZIP_NAME（必须是 <mchid>_YYYYMMDD_cert.zip，例如 1106035691_20260131_cert.zip）" >&2
+          exit 1
+        fi
         tmpdir="$(mktemp -d)"
         echo "$WECHAT_MERCHANT_CERT_ZIP_B64" | base64 -d > "$tmpdir/$WECHAT_MERCHANT_CERT_ZIP_NAME"
         cert_args=(--from-file="$WECHAT_MERCHANT_CERT_ZIP_NAME=$tmpdir/$WECHAT_MERCHANT_CERT_ZIP_NAME")
