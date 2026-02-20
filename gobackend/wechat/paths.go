@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"errors"
@@ -48,4 +48,3 @@ func resolveWechatpayPlatformCertPath() (string, error) {
 	}
 	return "", errors.New("缺少平台证书文件 platform_cert.pem（可放在 wechatpay/cert/ 下，或仅放置 *_cert.zip 让程序自动解压到 tmp 缓存）；也可改用平台公钥模式：配置 WECHAT_PLATFORM_PUBLIC_KEY（或放置 wechatpay/cert/platform_public_key.pem）")
 }
-

@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"errors"
@@ -218,40 +218,36 @@ func inferMchIDFromCertZip() string {
 	}
 	var cands []candidate
 
-	dirs := []string{
+	for _, dir := range []string{
 		filepath.Join("wechatpay", "cert"),
 		filepath.Join("..", "wechatpay", "cert"),
-	}
-	for _, dir := range dirs {
+	} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
-		for _, ent := range entries {
-			if ent.IsDir() {
+		for _, e := range entries {
+			if e.IsDir() {
 				continue
 			}
-			name := ent.Name()
+			name := e.Name()
 			m := re.FindStringSubmatch(name)
 			if len(m) != 2 {
 				continue
 			}
-			info, err := ent.Info()
+			info, err := e.Info()
 			if err != nil {
 				continue
 			}
-			cands = append(cands, candidate{
-				mchID: m[1],
-				mtime: info.ModTime(),
-			})
+			cands = append(cands, candidate{mchID: m[1], mtime: info.ModTime()})
 		}
 	}
-	if len(cands) == 0 {
-		return ""
-	}
-	// Pick the newest one.
+
 	sort.Slice(cands, func(i, j int) bool { return cands[i].mtime.After(cands[j].mtime) })
-	return cands[0].mchID
+	if len(cands) > 0 {
+		return cands[0].mchID
+	}
+	return ""
 }
 
 func inferFromApikeyFile(keyName string) string {
@@ -261,16 +257,15 @@ func inferFromApikeyFile(keyName string) string {
 		filepath.Join("wechatpay", "apikey", "key.txt"),
 		filepath.Join("..", "wechatpay", "apikey", "key.txt"),
 	}
-
 	for _, p := range candidates {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
+		// quick scan: allow "KEY=VALUE" or "KEY: VALUE"
 		if v := parseKeyFromText(string(b), keyName); v != "" {
 			return v
 		}
 	}
 	return ""
 }
-

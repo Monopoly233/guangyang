@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"context"
@@ -9,15 +9,62 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"gobackend/domain"
 )
 
+// CompareJobStore is the shared state store for compare jobs.
+//
+// NOTE: Job files/results are still stored on local filesystem (TMP_ROOT). This store
+// only addresses "status/paid/code_url" consistency across pods and restarts.
+type CompareJobStore interface {
+	Create(job *domain.CompareJob) error
+	Get(id string) (*domain.CompareJob, bool, error)
+	Update(id string, fn func(j *domain.CompareJob)) (*domain.CompareJob, bool, error)
+}
+
+type InMemoryCompareJobStore struct {
+	mu   sync.Mutex
+	jobs map[string]*domain.CompareJob
+}
+
+func NewInMemoryCompareJobStore() *InMemoryCompareJobStore {
+	return &InMemoryCompareJobStore{jobs: make(map[string]*domain.CompareJob)}
+}
+
+func (s *InMemoryCompareJobStore) Create(job *domain.CompareJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobs[job.ID] = job
+	return nil
+}
+
+func (s *InMemoryCompareJobStore) Get(id string) (*domain.CompareJob, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	return j, ok, nil
+}
+
+func (s *InMemoryCompareJobStore) Update(id string, fn func(j *domain.CompareJob)) (*domain.CompareJob, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return nil, false, nil
+	}
+	fn(j)
+	return j, true, nil
+}
+
 type compareJobRecord struct {
-	ID        string           `json:"id"`
-	Status    CompareJobStatus `json:"status"`
-	CreatedAt time.Time        `json:"createdAt"`
+	ID        string                  `json:"id"`
+	Status    domain.CompareJobStatus `json:"status"`
+	CreatedAt time.Time               `json:"createdAt"`
 
 	File1Path  string `json:"file1Path"`
 	File2Path  string `json:"file2Path"`
@@ -32,7 +79,7 @@ type compareJobRecord struct {
 	Error string `json:"error,omitempty"`
 }
 
-func recordFromJob(j *CompareJob) compareJobRecord {
+func recordFromJob(j *domain.CompareJob) compareJobRecord {
 	if j == nil {
 		return compareJobRecord{}
 	}
@@ -52,8 +99,8 @@ func recordFromJob(j *CompareJob) compareJobRecord {
 	}
 }
 
-func jobFromRecord(r compareJobRecord) *CompareJob {
-	return &CompareJob{
+func jobFromRecord(r compareJobRecord) *domain.CompareJob {
+	return &domain.CompareJob{
 		ID:          r.ID,
 		Status:      r.Status,
 		CreatedAt:   r.CreatedAt,
@@ -130,7 +177,7 @@ func (s *RedisCompareJobStore) key(id string) string {
 	return s.keyPrefix + strings.TrimSpace(id)
 }
 
-func (s *RedisCompareJobStore) Create(job *CompareJob) error {
+func (s *RedisCompareJobStore) Create(job *domain.CompareJob) error {
 	if job == nil || strings.TrimSpace(job.ID) == "" {
 		return errors.New("job/id 为空")
 	}
@@ -143,7 +190,7 @@ func (s *RedisCompareJobStore) Create(job *CompareJob) error {
 	return s.rdb.SetNX(ctx, s.key(job.ID), b, s.ttl).Err()
 }
 
-func (s *RedisCompareJobStore) Get(id string) (*CompareJob, bool, error) {
+func (s *RedisCompareJobStore) Get(id string) (*domain.CompareJob, bool, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, false, nil
@@ -164,7 +211,7 @@ func (s *RedisCompareJobStore) Get(id string) (*CompareJob, bool, error) {
 	return jobFromRecord(rec), true, nil
 }
 
-func (s *RedisCompareJobStore) Update(id string, fn func(j *CompareJob)) (*CompareJob, bool, error) {
+func (s *RedisCompareJobStore) Update(id string, fn func(j *domain.CompareJob)) (*domain.CompareJob, bool, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, false, nil
@@ -175,7 +222,7 @@ func (s *RedisCompareJobStore) Update(id string, fn func(j *CompareJob)) (*Compa
 
 	key := s.key(id)
 
-	var out *CompareJob
+	var out *domain.CompareJob
 	var ok bool
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)

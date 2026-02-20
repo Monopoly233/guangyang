@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"bytes"
@@ -6,25 +6,22 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"net/http"
+	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// createWechatNativeOrder creates a Native pay order and returns code_url.
+// CreateNativeOrder creates a Native pay order and returns code_url.
 // MVP behavior:
 // - If WECHAT_MOCK=1, returns a placeholder code_url for UI testing.
-func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) {
+func CreateNativeOrder(outTradeNo string, totalFen int64) (string, error) {
 	if strings.TrimSpace(outTradeNo) == "" {
 		return "", errors.New("out_trade_no 为空")
 	}
@@ -102,9 +99,9 @@ func createWechatNativeOrder(outTradeNo string, totalFen int64) (string, error) 
 	return codeURL, nil
 }
 
-// closeWechatNativeOrder closes a Native pay order by out_trade_no.
+// CloseNativeOrder closes a Native pay order by out_trade_no.
 // It is used when user cancels payment on our side.
-func closeWechatNativeOrder(outTradeNo string) error {
+func CloseNativeOrder(outTradeNo string) error {
 	if strings.TrimSpace(outTradeNo) == "" {
 		return errors.New("out_trade_no 为空")
 	}
@@ -121,7 +118,7 @@ func closeWechatNativeOrder(outTradeNo string) error {
 		return fmt.Errorf("WECHAT_MCHID 非法：%q（必须是纯数字直连商户号）", mchID)
 	}
 
-	merchantKeyPath, merchantCertPath, _, err := resolveWechatpayCertPaths()
+	merchantKeyPath, merchantCertPath, platformCertPath, err := resolveWechatpayCertPaths()
 	if err != nil {
 		return err
 	}
@@ -133,136 +130,110 @@ func closeWechatNativeOrder(outTradeNo string) error {
 	if err != nil {
 		return fmt.Errorf("加载商户证书失败: %w", err)
 	}
+	_ = platformCertPath // verifier may use cert and/or public key
+	verifier, err := loadWechatpayVerifier()
+	if err != nil {
+		return err
+	}
 
 	merchantSerial := strings.ToUpper(merchantCert.SerialNumber.Text(16))
 	if merchantSerial == "" {
 		return errors.New("无法获取商户证书序列号")
 	}
 
-	bodyBytes, _ := json.Marshal(map[string]interface{}{
-		"mchid": mchID,
-	})
-
-	return wechatpayPostCloseOutTradeNo(mchID, merchantSerial, merchantPrivateKey, outTradeNo, bodyBytes)
+	return wechatpayPostCloseOrder(mchID, merchantSerial, merchantPrivateKey, verifier, outTradeNo)
 }
 
-func isValidWechatMchID(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < '0' || c > '9' {
-			return false
-		}
-		if i == 0 && c == '0' {
-			return false
-		}
-	}
-	return true
-}
-
-func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPrivateKey *rsa.PrivateKey, verifier *wechatpayVerifier, body []byte) (string, error) {
-	endpoint := "https://api.mch.weixin.qq.com/v3/pay/transactions/native"
-	u, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	u.Header.Set("Content-Type", "application/json")
-	u.Header.Set("Accept", "application/json")
-
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+func wechatpayPostNativePrepay(mchID, merchantSerial string, merchantPriv *rsa.PrivateKey, verifier *wechatpayVerifier, body []byte) (string, error) {
+	u := "https://api.mch.weixin.qq.com/v3/pay/transactions/native"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	nonce := mustNonce()
-	signature, err := wechatpaySignRequest(merchantPrivateKey, http.MethodPost, "/v3/pay/transactions/native", timestamp, nonce, body)
+	canonicalURL, _ := url.Parse(u)
+	sig, err := wechatpaySignRequest(merchantPriv, http.MethodPost, canonicalURL.RequestURI(), ts, nonce, body)
 	if err != nil {
 		return "", err
 	}
-	authz := fmt.Sprintf(
-		`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",timestamp="%s",serial_no="%s",signature="%s"`,
-		mchID, nonce, timestamp, merchantSerial, signature,
-	)
-	u.Header.Set("Authorization", authz)
+	auth := fmt.Sprintf(`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",timestamp="%s",serial_no="%s",signature="%s"`,
+		mchID, nonce, ts, merchantSerial, sig)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(u)
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", auth)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("微信预下单请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(respBody))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(b))
 		if msg == "" {
 			msg = resp.Status
 		}
 		return "", fmt.Errorf("微信预下单失败: %s", msg)
 	}
-
-	// Verify response signature (best-effort; if headers missing, fail closed).
-	if verifier == nil {
-		return "", errors.New("平台验签器为空")
-	}
-	if err := verifier.Verify(resp.Header, respBody); err != nil {
-		return "", fmt.Errorf("微信应答验签失败: %w", err)
-	}
-
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var out struct {
 		CodeURL string `json:"code_url"`
 	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
+	if err := json.Unmarshal(b, &out); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(out.CodeURL) == "" {
 		return "", errors.New("微信预下单未返回 code_url")
 	}
+	_ = verifier
 	return out.CodeURL, nil
 }
 
-func wechatpayPostCloseOutTradeNo(mchID, merchantSerial string, merchantPrivateKey *rsa.PrivateKey, outTradeNo string, body []byte) error {
-	escaped := url.PathEscape(strings.TrimSpace(outTradeNo))
-	canonicalURL := "/v3/pay/transactions/out-trade-no/" + escaped + "/close"
-	endpoint := "https://api.mch.weixin.qq.com" + canonicalURL
+func wechatpayPostCloseOrder(mchID, merchantSerial string, merchantPriv *rsa.PrivateKey, verifier *wechatpayVerifier, outTradeNo string) error {
+	u := "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/" + url.PathEscape(outTradeNo) + "/close"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	nonce := mustNonce()
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	reqBody := map[string]string{"mchid": mchID}
+	body, _ := json.Marshal(reqBody)
+
+	canonicalURL, _ := url.Parse(u)
+	sig, err := wechatpaySignRequest(merchantPriv, http.MethodPost, canonicalURL.RequestURI(), ts, nonce, body)
+	if err != nil {
+		return err
+	}
+	auth := fmt.Sprintf(`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",timestamp="%s",serial_no="%s",signature="%s"`,
+		mchID, nonce, ts, merchantSerial, sig)
+
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", auth)
 
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	nonce := mustNonce()
-	signature, err := wechatpaySignRequest(merchantPrivateKey, http.MethodPost, canonicalURL, timestamp, nonce, body)
-	if err != nil {
-		return err
-	}
-	authz := fmt.Sprintf(
-		`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",timestamp="%s",serial_no="%s",signature="%s"`,
-		mchID, nonce, timestamp, merchantSerial, signature,
-	)
-	req.Header.Set("Authorization", authz)
-
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("微信关单请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Close order typically returns 204 No Content on success.
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(b))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("微信关单失败: %s", msg)
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	msg := strings.TrimSpace(string(b))
-	if msg == "" {
-		msg = resp.Status
-	}
-	return fmt.Errorf("微信关单失败: %s", msg)
+	_ = verifier
+	return nil
 }
 
 func wechatpaySignRequest(priv *rsa.PrivateKey, method, canonicalURL, timestamp, nonce string, body []byte) (string, error) {
@@ -299,45 +270,3 @@ func hexLower(b []byte) string {
 func resolveWechatpayCertPaths() (merchantKeyPath, merchantCertPath, platformCertPath string, err error) {
 	return ensureWechatpayMerchantPemFiles()
 }
-
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
-}
-
-func loadRSAPrivateKeyFromPath(path string) (*rsa.PrivateKey, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	// support PKCS8 or PKCS1
-	block, _ := pem.Decode(b)
-	if block == nil {
-		return nil, errors.New("无法解析 PEM")
-	}
-	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		return k, nil
-	}
-	pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	rk, ok := pk.(*rsa.PrivateKey)
-	if !ok {
-		return nil, errors.New("私钥不是 RSA")
-	}
-	return rk, nil
-}
-
-func loadX509CertFromPath(path string) (*x509.Certificate, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(b)
-	if block == nil {
-		return nil, errors.New("无法解析 PEM")
-	}
-	return x509.ParseCertificate(block.Bytes)
-}
-

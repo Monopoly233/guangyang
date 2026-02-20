@@ -13,6 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gobackend/compare"
+	"gobackend/queue"
+	"gobackend/store"
+	"gobackend/wechat"
 )
 
 // BillingEvent 代表一次计费事件或扣费占位
@@ -103,7 +108,7 @@ func (s *memoryStore) balance() float64 {
 	return math.Max(0, s.baseBalance-s.totalDeducted)
 }
 
-var store = newMemoryStore()
+var billingStore = newMemoryStore()
 
 func main() {
 	mux := http.NewServeMux()
@@ -115,19 +120,19 @@ func main() {
 	// Compare jobs (pay-gated export)
 	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
 	pyBase := readEnvDefault("PY_API_BASE", "http://localhost:8000")
-	queue := NewInMemoryQueue(256)
-	queue.Start(2)
-	var jobStore CompareJobStore = newInMemoryCompareJobStore()
+	q := queue.NewInMemoryQueue(256)
+	q.Start(2)
+	var jobStore store.CompareJobStore = store.NewInMemoryCompareJobStore()
 	if redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); redisAddr != "" {
-		rs, err := NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
+		rs, err := store.NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
 		if err != nil {
 			log.Fatalf("init redis store failed: %v", err)
 		}
 		jobStore = rs
 	}
-	compareSvc := newCompareService(jobStore, queue, tmpRoot, pyBase)
-	compareSvc.registerRoutes(mux)
-	compareSvc.registerWechatpayRoutes(mux)
+	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase)
+	compareSvc.RegisterRoutes(mux)
+	wechat.RegisterNotifyRoutes(mux, jobStore, q)
 
 	addr := ":" + readEnvDefault("PORT", "8080")
 	log.Printf("Go billing stub listening on %s", addr)
@@ -147,7 +152,7 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]interface{}{
 		"user_id": "demo-user",
-		"balance": fmt.Sprintf("%.2f", store.balance()),
+		"balance": fmt.Sprintf("%.2f", billingStore.balance()),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -182,7 +187,7 @@ func handleCreatePending(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = newKey("pending")
 	}
-	ev := store.ensurePending(key, req.Amount, req.ApiCall, req.Metadata)
+	ev := billingStore.ensurePending(key, req.Amount, req.ApiCall, req.Metadata)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"idempotencyKey": ev.IdempotencyKey,
 		"status":         "pending",
@@ -211,7 +216,7 @@ func handleDeduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ev, err := store.markDeducted(req.IdempotencyKey, req.Amount, req.ApiCall)
+	ev, err := billingStore.markDeducted(req.IdempotencyKey, req.Amount, req.ApiCall)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

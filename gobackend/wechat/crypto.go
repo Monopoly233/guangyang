@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"crypto/aes"
@@ -30,4 +30,3 @@ func decryptWechatpayResource(apiV3Key string, associatedData string, nonce stri
 	}
 	return plain, nil
 }
-

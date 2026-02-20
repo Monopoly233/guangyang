@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"encoding/json"
@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"gobackend/domain"
+	"gobackend/queue"
+	"gobackend/store"
 )
 
 type wechatpayNotifyEnvelope struct {
@@ -29,13 +33,19 @@ type wechatpayTransaction struct {
 	} `json:"amount"`
 }
 
-func (s *CompareService) registerWechatpayRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/wechatpay/notify", s.handleWechatpayNotify)
+func RegisterNotifyRoutes(mux *http.ServeMux, st store.CompareJobStore, q *queue.InMemoryQueue) {
+	h := &notifyHandler{store: st, queue: q}
+	mux.HandleFunc("/wechatpay/notify", h.handle)
 	// 兼容末尾多一个 "/" 的 notify_url（Go 的 ServeMux 对不带 "/" 结尾的 pattern 是精确匹配）
-	mux.HandleFunc("/wechatpay/notify/", s.handleWechatpayNotify)
+	mux.HandleFunc("/wechatpay/notify/", h.handle)
 }
 
-func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Request) {
+type notifyHandler struct {
+	store store.CompareJobStore
+	queue *queue.InMemoryQueue
+}
+
+func (h *notifyHandler) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -106,7 +116,7 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 	}
 
 	// 金额校验：以 job 上记录的 amount 为准（单位：分）。若未记录则回退为 1 分（兼容旧逻辑/竞态）。
-	if job, ok, _ := s.store.Get(jobID); ok {
+	if job, ok, _ := h.store.Get(jobID); ok {
 		expectedFen := int64(math.Round(job.AmountYuan * 100))
 		if expectedFen <= 0 {
 			expectedFen = 1
@@ -120,7 +130,7 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 
 	update := func() {
 		now := time.Now()
-		j, ok, _ := s.store.Update(jobID, func(j *CompareJob) {
+		j, ok, _ := h.store.Update(jobID, func(j *domain.CompareJob) {
 			// 幂等：已支付就不重复写
 			if j.Paid {
 				return
@@ -128,14 +138,14 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 			j.Paid = true
 			j.PaidAt = &now
 			// 如果结果已生成，则放行；否则先退出“等待支付”，继续轮询直到 ready。
-			if j.ResultPath != "" && (j.Status == CompareJobStatusAwaitingPayment || j.Status == CompareJobStatusProcessing) {
-				j.Status = CompareJobStatusReady
+			if j.ResultPath != "" && (j.Status == domain.CompareJobStatusAwaitingPayment || j.Status == domain.CompareJobStatusProcessing) {
+				j.Status = domain.CompareJobStatusReady
 				j.AmountYuan = 0
 				j.CodeURL = ""
 				return
 			}
-			if j.Status == CompareJobStatusAwaitingPayment {
-				j.Status = CompareJobStatusProcessing
+			if j.Status == domain.CompareJobStatusAwaitingPayment {
+				j.Status = domain.CompareJobStatusProcessing
 			}
 		})
 		if !ok {
@@ -145,11 +155,17 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	if s.queue != nil {
-		s.queue.Enqueue(update)
+	if h.queue != nil {
+		h.queue.Enqueue(update)
 	} else {
 		update()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "OK"})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

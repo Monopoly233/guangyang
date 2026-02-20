@@ -1,8 +1,8 @@
-package main
+package queue
 
 import "sync"
 
-// InMemoryQueue is an MVP queue (replaceable by Redis/RabbitMQ later).
+// InMemoryQueue is an MVP queue (replaceable by Redis Streams later).
 // It runs tasks in background worker goroutines.
 type InMemoryQueue struct {
 	ch     chan func()
@@ -67,4 +67,3 @@ func (q *InMemoryQueue) Stop() {
 		close(q.ch)
 	}
 }
-

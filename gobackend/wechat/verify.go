@@ -1,4 +1,4 @@
-package main
+package wechat
 
 import (
 	"crypto"
@@ -203,3 +203,51 @@ func describeWechatPlatformKeyInput(orig string, normalized string) string {
 		len(o), len(n), hasBeginPub, hasEndPub, hasBeginCert, hasEndCert, hasRealNL, hasEscNL, looksB64Pem, hex.EncodeToString(sum[:]))
 }
 
+func isValidWechatMchID(mchID string) bool {
+	mchID = strings.TrimSpace(mchID)
+	if mchID == "" {
+		return false
+	}
+	for _, ch := range mchID {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return mchID[0] != '0'
+}
+
+func loadRSAPrivateKeyFromPath(path string) (*rsa.PrivateKey, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// support PKCS8 or PKCS1
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, errors.New("无法解析 PEM")
+	}
+	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return k, nil
+	}
+	pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	rk, ok := pk.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("私钥不是 RSA")
+	}
+	return rk, nil
+}
+
+func loadX509CertFromPath(path string) (*x509.Certificate, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, errors.New("无法解析 PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}

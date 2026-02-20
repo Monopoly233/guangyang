@@ -1,9 +1,10 @@
-package main
+package compare
 
 import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,97 +15,33 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"gobackend/domain"
+	"gobackend/queue"
+	"gobackend/store"
+	"gobackend/wechat"
 )
 
-type CompareJobStatus string
-
-const (
-	CompareJobStatusProcessing      CompareJobStatus = "processing"
-	CompareJobStatusAwaitingPayment CompareJobStatus = "awaiting_payment"
-	CompareJobStatusReady           CompareJobStatus = "ready"
-	CompareJobStatusFailed          CompareJobStatus = "failed"
-	CompareJobStatusCancelled       CompareJobStatus = "cancelled"
-)
-
-type CompareJob struct {
-	ID        string           `json:"jobId"`
-	Status    CompareJobStatus `json:"status"`
-	CreatedAt time.Time        `json:"createdAt"`
-
-	// Inputs (saved on disk)
-	File1Path string `json:"-"`
-	File2Path string `json:"-"`
-
-	// Result (saved on disk)
-	ResultPath string `json:"-"`
-
-	// Payment gating
-	AmountYuan  float64    `json:"amount,omitempty"` // 单位：元（AwaitingPayment 时返回给前端展示）
-	CodeURL     string     `json:"code_url,omitempty"`
-	Paid        bool       `json:"paid"`
-	PaidAt      *time.Time `json:"paidAt,omitempty"`
-	CancelledAt *time.Time `json:"cancelledAt,omitempty"`
-
-	// Diagnostics (non-sensitive)
-	Error string `json:"error,omitempty"`
-}
-
-type InMemoryCompareJobStore struct {
-	mu   sync.Mutex
-	jobs map[string]*CompareJob
-}
-
-func newInMemoryCompareJobStore() *InMemoryCompareJobStore {
-	return &InMemoryCompareJobStore{jobs: make(map[string]*CompareJob)}
-}
-
-func (s *InMemoryCompareJobStore) Create(job *CompareJob) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.jobs[job.ID] = job
-	return nil
-}
-
-func (s *InMemoryCompareJobStore) Get(id string) (*CompareJob, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	j, ok := s.jobs[id]
-	return j, ok, nil
-}
-
-func (s *InMemoryCompareJobStore) Update(id string, fn func(j *CompareJob)) (*CompareJob, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	j, ok := s.jobs[id]
-	if !ok {
-		return nil, false, nil
-	}
-	fn(j)
-	return j, true, nil
-}
-
-type CompareService struct {
-	store     CompareJobStore
-	queue     *InMemoryQueue
+type Service struct {
+	store     store.CompareJobStore
+	queue     *queue.InMemoryQueue
 	tmpRoot   string
 	pyAPIBase string
 }
 
-func newCompareService(store CompareJobStore, queue *InMemoryQueue, tmpRoot, pyAPIBase string) *CompareService {
-	return &CompareService{
-		store:     store,
-		queue:     queue,
+func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string) *Service {
+	return &Service{
+		store:     st,
+		queue:     q,
 		tmpRoot:   tmpRoot,
 		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
 	}
 }
 
-// compareJobFeeFen returns fee in "fen" (1 yuan = 100 fen).
-// Default is 0 (free) to allow "支付 0 元" without creating a WeChat order.
-// You can override by setting env COMPARE_JOB_FEE_FEN (non-negative integer).
-func compareJobFeeFen() int64 {
+// FeeFen returns fee in "fen" (1 yuan = 100 fen).
+// Default is 0 (free). You can override by setting env COMPARE_JOB_FEE_FEN (non-negative integer).
+func FeeFen() int64 {
 	raw := strings.TrimSpace(os.Getenv("COMPARE_JOB_FEE_FEN"))
 	if raw == "" {
 		return 0
@@ -116,12 +53,12 @@ func compareJobFeeFen() int64 {
 	return n
 }
 
-func (s *CompareService) registerRoutes(mux *http.ServeMux) {
+func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/compare/jobs", s.handleCreateJob)
 	mux.HandleFunc("/compare/jobs/", s.handleJobRoutes)
 }
 
-func (s *CompareService) handleCreateJob(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -167,9 +104,9 @@ func (s *CompareService) handleCreateJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	job := &CompareJob{
+	job := &domain.CompareJob{
 		ID:        jobID,
-		Status:    CompareJobStatusProcessing,
+		Status:    domain.CompareJobStatusProcessing,
 		CreatedAt: time.Now(),
 		File1Path: file1Path,
 		File2Path: file2Path,
@@ -190,7 +127,7 @@ func (s *CompareService) handleCreateJob(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *CompareService) handleJobRoutes(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleJobRoutes(w http.ResponseWriter, r *http.Request) {
 	// /compare/jobs/{jobId}
 	// /compare/jobs/{jobId}/export
 	// /compare/jobs/{jobId}/cancel
@@ -249,7 +186,7 @@ func (s *CompareService) handleJobRoutes(w http.ResponseWriter, r *http.Request)
 	http.NotFound(w, r)
 }
 
-func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jobID string) {
+func (s *Service) handleGetJob(w http.ResponseWriter, r *http.Request, jobID string) {
 	job, ok, err := s.store.Get(jobID)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -262,8 +199,8 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 	// 防御性：若已支付且结果已生成，但状态仍停留在 awaiting_payment，则对外视为 ready
 	// （避免轮询端一直弹支付框）。
 	status := job.Status
-	if status == CompareJobStatusAwaitingPayment && job.Paid && job.ResultPath != "" {
-		status = CompareJobStatusReady
+	if status == domain.CompareJobStatusAwaitingPayment && job.Paid && job.ResultPath != "" {
+		status = domain.CompareJobStatusReady
 	}
 	// Return a safe subset
 	resp := map[string]interface{}{
@@ -272,11 +209,11 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 		"createdAt": job.CreatedAt,
 		"paid":      job.Paid,
 	}
-	if status == CompareJobStatusAwaitingPayment {
+	if status == domain.CompareJobStatusAwaitingPayment {
 		resp["amount"] = job.AmountYuan
 		resp["code_url"] = job.CodeURL
 	}
-	if job.Status == CompareJobStatusFailed && job.Error != "" {
+	if job.Status == domain.CompareJobStatusFailed && job.Error != "" {
 		resp["error"] = job.Error
 	}
 	if job.CancelledAt != nil {
@@ -288,7 +225,7 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request, jobID string) {
+func (s *Service) handleCancelJob(w http.ResponseWriter, r *http.Request, jobID string) {
 	job, ok, err := s.store.Get(jobID)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -300,7 +237,7 @@ func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Idempotent: already cancelled.
-	if job.Status == CompareJobStatusCancelled {
+	if job.Status == domain.CompareJobStatusCancelled {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"jobId":     job.ID,
 			"status":    string(job.Status),
@@ -310,37 +247,37 @@ func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request,
 	}
 
 	// If already paid/released, don't allow cancel.
-	if job.Paid || job.Status == CompareJobStatusReady {
+	if job.Paid || job.Status == domain.CompareJobStatusReady {
 		http.Error(w, "订单已支付或已放行，无法取消", http.StatusConflict)
 		return
 	}
 
 	// If we already created a WeChat order, attempt to close it first.
-	if job.Status == CompareJobStatusAwaitingPayment {
-		if err := closeWechatNativeOrder(jobID); err != nil {
+	if job.Status == domain.CompareJobStatusAwaitingPayment {
+		if err := wechat.CloseNativeOrder(jobID); err != nil {
 			http.Error(w, "关闭微信订单失败: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 	}
 
 	now := time.Now()
-	_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
+	_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
 		// Don't overwrite if paid concurrently.
 		if j.Paid {
 			return
 		}
-		j.Status = CompareJobStatusCancelled
+		j.Status = domain.CompareJobStatusCancelled
 		j.CancelledAt = &now
 	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"jobId":     jobID,
-		"status":    string(CompareJobStatusCancelled),
+		"status":    string(domain.CompareJobStatusCancelled),
 		"cancelled": true,
 	})
 }
 
-func (s *CompareService) handleDownloadExport(w http.ResponseWriter, r *http.Request, jobID string) {
+func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, jobID string) {
 	job, ok, err := s.store.Get(jobID)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -350,11 +287,11 @@ func (s *CompareService) handleDownloadExport(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
-	if job.Status == CompareJobStatusCancelled {
+	if job.Status == domain.CompareJobStatusCancelled {
 		http.Error(w, "订单已取消", http.StatusGone)
 		return
 	}
-	if !job.Paid || job.Status != CompareJobStatusReady || job.ResultPath == "" {
+	if !job.Paid || job.Status != domain.CompareJobStatusReady || job.ResultPath == "" {
 		http.Error(w, "请先完成支付后再下载结果", http.StatusPaymentRequired)
 		return
 	}
@@ -402,7 +339,7 @@ func saveUploadTo(dir, name string, src multipart.File) (string, error) {
 	return dstPath, nil
 }
 
-func (s *CompareService) runCompareTask(jobID string) {
+func (s *Service) runCompareTask(jobID string) {
 	job, ok, err := s.store.Get(jobID)
 	if err != nil {
 		return
@@ -410,7 +347,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 	if !ok {
 		return
 	}
-	if job.Status == CompareJobStatusCancelled {
+	if job.Status == domain.CompareJobStatusCancelled {
 		return
 	}
 	jobDir := filepath.Dir(job.File1Path)
@@ -421,40 +358,40 @@ func (s *CompareService) runCompareTask(jobID string) {
 	// 1) Call Python /compare/export to generate xlsx
 	resultPath := filepath.Join(jobDir, "comparison_result.xlsx")
 	if err := callPythonCompareExport(s.pyAPIBase, job.File1Path, job.File2Path, resultPath); err != nil {
-		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
-			j.Status = CompareJobStatusFailed
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			j.Status = domain.CompareJobStatusFailed
 			j.Error = err.Error()
 		})
 		return
 	}
 
 	// If cancelled while generating, stop here.
-	if j2, ok, _ := s.store.Get(jobID); ok && j2.Status == CompareJobStatusCancelled {
+	if j2, ok, _ := s.store.Get(jobID); ok && j2.Status == domain.CompareJobStatusCancelled {
 		return
 	}
 
 	// If payment already confirmed (rare), directly release.
 	if job.Paid {
-		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
-			j.Status = CompareJobStatusReady
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			j.Status = domain.CompareJobStatusReady
 			j.ResultPath = resultPath
 		})
 		return
 	}
 
-	feeFen := compareJobFeeFen()
+	feeFen := FeeFen()
 	if feeFen <= 0 {
 		// Free: no WeChat order, directly mark paid and release result.
 		now := time.Now()
-		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
-			if j.Status == CompareJobStatusCancelled {
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			if j.Status == domain.CompareJobStatusCancelled {
 				return
 			}
 			if !j.Paid {
 				j.Paid = true
 				j.PaidAt = &now
 			}
-			j.Status = CompareJobStatusReady
+			j.Status = domain.CompareJobStatusReady
 			j.ResultPath = resultPath
 			j.AmountYuan = 0
 			j.CodeURL = ""
@@ -463,21 +400,21 @@ func (s *CompareService) runCompareTask(jobID string) {
 	}
 
 	// 2) Create Native payment (feeFen) and gate result
-	codeURL, err := createWechatNativeOrder(jobID, feeFen)
+	codeURL, err := wechat.CreateNativeOrder(jobID, feeFen)
 	if err != nil {
-		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
-			j.Status = CompareJobStatusFailed
+		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+			j.Status = domain.CompareJobStatusFailed
 			j.ResultPath = resultPath
 			j.Error = "创建微信支付订单失败: " + err.Error()
 		})
 		return
 	}
 
-	_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
-		if j.Status == CompareJobStatusCancelled || j.Paid {
+	_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+		if j.Status == domain.CompareJobStatusCancelled || j.Paid {
 			return
 		}
-		j.Status = CompareJobStatusAwaitingPayment
+		j.Status = domain.CompareJobStatusAwaitingPayment
 		j.ResultPath = resultPath
 		j.AmountYuan = float64(feeFen) / 100.0
 		j.CodeURL = codeURL
@@ -564,4 +501,10 @@ func addFilePart(w *multipart.Writer, fieldName, filename string, r io.Reader) e
 		return err
 	}
 	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }
