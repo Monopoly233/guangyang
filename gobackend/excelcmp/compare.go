@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-var primaryKeyCandidates = []string{"id", "编号", "编码", "资产编号", "序号", "资产号", "code", "no", "序列号"}
+var primaryKeyCandidates = []string{"id", "编号", "编码", "资产编号", "资产编码", "序号", "资产号", "code", "no", "序列号"}
 
 // GuessPrimaryKeyColumn replicates python `guess_primary_key_column`.
 func GuessPrimaryKeyColumn(tbl *Table, checkRows int) (string, bool) {
