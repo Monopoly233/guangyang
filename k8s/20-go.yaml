@@ -31,6 +31,8 @@ spec:
               value: "1"
             - name: TMP_ROOT
               value: "/app/tmp"
+            - name: REDIS_ADDR
+              value: "10.0.40.253:6379"
             # WeChatPay（真实支付测试时需要注入）
             - name: WECHAT_NOTIFY_URL
               valueFrom:

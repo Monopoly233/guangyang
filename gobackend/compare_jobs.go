@@ -51,47 +51,48 @@ type CompareJob struct {
 	Error string `json:"error,omitempty"`
 }
 
-type CompareJobStore struct {
+type InMemoryCompareJobStore struct {
 	mu   sync.Mutex
 	jobs map[string]*CompareJob
 }
 
-func newCompareJobStore() *CompareJobStore {
-	return &CompareJobStore{jobs: make(map[string]*CompareJob)}
+func newInMemoryCompareJobStore() *InMemoryCompareJobStore {
+	return &InMemoryCompareJobStore{jobs: make(map[string]*CompareJob)}
 }
 
-func (s *CompareJobStore) create(job *CompareJob) {
+func (s *InMemoryCompareJobStore) Create(job *CompareJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.jobs[job.ID] = job
+	return nil
 }
 
-func (s *CompareJobStore) get(id string) (*CompareJob, bool) {
+func (s *InMemoryCompareJobStore) Get(id string) (*CompareJob, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	j, ok := s.jobs[id]
-	return j, ok
+	return j, ok, nil
 }
 
-func (s *CompareJobStore) update(id string, fn func(j *CompareJob)) (*CompareJob, bool) {
+func (s *InMemoryCompareJobStore) Update(id string, fn func(j *CompareJob)) (*CompareJob, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	j, ok := s.jobs[id]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	fn(j)
-	return j, true
+	return j, true, nil
 }
 
 type CompareService struct {
-	store     *CompareJobStore
+	store     CompareJobStore
 	queue     *InMemoryQueue
 	tmpRoot   string
 	pyAPIBase string
 }
 
-func newCompareService(store *CompareJobStore, queue *InMemoryQueue, tmpRoot, pyAPIBase string) *CompareService {
+func newCompareService(store CompareJobStore, queue *InMemoryQueue, tmpRoot, pyAPIBase string) *CompareService {
 	return &CompareService{
 		store:     store,
 		queue:     queue,
@@ -174,7 +175,7 @@ func (s *CompareService) handleCreateJob(w http.ResponseWriter, r *http.Request)
 		File2Path: file2Path,
 		Paid:      false,
 	}
-	s.store.create(job)
+	_ = s.store.Create(job)
 
 	// Enqueue background compare (actual implementation in worker)
 	if s.queue != nil {
@@ -249,7 +250,11 @@ func (s *CompareService) handleJobRoutes(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jobID string) {
-	job, ok := s.store.get(jobID)
+	job, ok, err := s.store.Get(jobID)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -284,7 +289,11 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 }
 
 func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request, jobID string) {
-	job, ok := s.store.get(jobID)
+	job, ok, err := s.store.Get(jobID)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -315,7 +324,7 @@ func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request,
 	}
 
 	now := time.Now()
-	_, _ = s.store.update(jobID, func(j *CompareJob) {
+	_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 		// Don't overwrite if paid concurrently.
 		if j.Paid {
 			return
@@ -332,7 +341,11 @@ func (s *CompareService) handleCancelJob(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *CompareService) handleDownloadExport(w http.ResponseWriter, r *http.Request, jobID string) {
-	job, ok := s.store.get(jobID)
+	job, ok, err := s.store.Get(jobID)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -390,7 +403,10 @@ func saveUploadTo(dir, name string, src multipart.File) (string, error) {
 }
 
 func (s *CompareService) runCompareTask(jobID string) {
-	job, ok := s.store.get(jobID)
+	job, ok, err := s.store.Get(jobID)
+	if err != nil {
+		return
+	}
 	if !ok {
 		return
 	}
@@ -405,7 +421,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 	// 1) Call Python /compare/export to generate xlsx
 	resultPath := filepath.Join(jobDir, "comparison_result.xlsx")
 	if err := callPythonCompareExport(s.pyAPIBase, job.File1Path, job.File2Path, resultPath); err != nil {
-		_, _ = s.store.update(jobID, func(j *CompareJob) {
+		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 			j.Status = CompareJobStatusFailed
 			j.Error = err.Error()
 		})
@@ -413,13 +429,13 @@ func (s *CompareService) runCompareTask(jobID string) {
 	}
 
 	// If cancelled while generating, stop here.
-	if j2, ok := s.store.get(jobID); ok && j2.Status == CompareJobStatusCancelled {
+	if j2, ok, _ := s.store.Get(jobID); ok && j2.Status == CompareJobStatusCancelled {
 		return
 	}
 
 	// If payment already confirmed (rare), directly release.
 	if job.Paid {
-		_, _ = s.store.update(jobID, func(j *CompareJob) {
+		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 			j.Status = CompareJobStatusReady
 			j.ResultPath = resultPath
 		})
@@ -430,7 +446,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 	if feeFen <= 0 {
 		// Free: no WeChat order, directly mark paid and release result.
 		now := time.Now()
-		_, _ = s.store.update(jobID, func(j *CompareJob) {
+		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 			if j.Status == CompareJobStatusCancelled {
 				return
 			}
@@ -449,7 +465,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 	// 2) Create Native payment (feeFen) and gate result
 	codeURL, err := createWechatNativeOrder(jobID, feeFen)
 	if err != nil {
-		_, _ = s.store.update(jobID, func(j *CompareJob) {
+		_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 			j.Status = CompareJobStatusFailed
 			j.ResultPath = resultPath
 			j.Error = "创建微信支付订单失败: " + err.Error()
@@ -457,7 +473,7 @@ func (s *CompareService) runCompareTask(jobID string) {
 		return
 	}
 
-	_, _ = s.store.update(jobID, func(j *CompareJob) {
+	_, _, _ = s.store.Update(jobID, func(j *CompareJob) {
 		if j.Status == CompareJobStatusCancelled || j.Paid {
 			return
 		}

@@ -104,7 +104,6 @@ func (s *memoryStore) balance() float64 {
 }
 
 var store = newMemoryStore()
-var compareJobs = newCompareJobStore()
 
 func main() {
 	mux := http.NewServeMux()
@@ -118,7 +117,15 @@ func main() {
 	pyBase := readEnvDefault("PY_API_BASE", "http://localhost:8000")
 	queue := NewInMemoryQueue(256)
 	queue.Start(2)
-	compareSvc := newCompareService(compareJobs, queue, tmpRoot, pyBase)
+	var jobStore CompareJobStore = newInMemoryCompareJobStore()
+	if redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); redisAddr != "" {
+		rs, err := NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
+		if err != nil {
+			log.Fatalf("init redis store failed: %v", err)
+		}
+		jobStore = rs
+	}
+	compareSvc := newCompareService(jobStore, queue, tmpRoot, pyBase)
 	compareSvc.registerRoutes(mux)
 	compareSvc.registerWechatpayRoutes(mux)
 
@@ -146,10 +153,10 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 type pendingRequest struct {
-	Amount          float64                `json:"amount"`
-	ApiCall         string                 `json:"apiCall,omitempty"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
-	IdempotencyKey  string                 `json:"idempotencyKey,omitempty"`
+	Amount         float64                `json:"amount"`
+	ApiCall        string                 `json:"apiCall,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	IdempotencyKey string                 `json:"idempotencyKey,omitempty"`
 }
 
 func handleCreatePending(w http.ResponseWriter, r *http.Request) {
@@ -252,4 +259,3 @@ func corsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-

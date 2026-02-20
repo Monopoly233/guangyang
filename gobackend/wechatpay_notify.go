@@ -106,7 +106,7 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 	}
 
 	// 金额校验：以 job 上记录的 amount 为准（单位：分）。若未记录则回退为 1 分（兼容旧逻辑/竞态）。
-	if job, ok := s.store.get(jobID); ok {
+	if job, ok, _ := s.store.Get(jobID); ok {
 		expectedFen := int64(math.Round(job.AmountYuan * 100))
 		if expectedFen <= 0 {
 			expectedFen = 1
@@ -120,7 +120,7 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 
 	update := func() {
 		now := time.Now()
-		j, ok := s.store.update(jobID, func(j *CompareJob) {
+		j, ok, _ := s.store.Update(jobID, func(j *CompareJob) {
 			// 幂等：已支付就不重复写
 			if j.Paid {
 				return
