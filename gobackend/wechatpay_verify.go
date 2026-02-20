@@ -39,17 +39,7 @@ func loadWechatpayVerifier() (*wechatpayVerifier, error) {
 	if pemText := strings.TrimSpace(readWechatPlatformPublicKeyPEM()); pemText != "" {
 		pub, err := parseRSAPublicKeyFromPEM(pemText)
 		if err != nil {
-			// If env exists but is malformed (common: missing END line / newlines mangled),
-			// fall back to mounted file/cached key extracted from zip.
-			if fallback := strings.TrimSpace(readWechatPlatformPublicKeyPEMFromFiles()); fallback != "" {
-				if pub2, err2 := parseRSAPublicKeyFromPEM(fallback); err2 == nil {
-					v.platformPublicKey = pub2
-				} else {
-					return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w（同时从文件/缓存读取平台公钥也失败: %v）", err, err2)
-				}
-			} else {
-				return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w（且未找到 wechatpay/cert/platform_public_key.pem 或缓存公钥可回退）", err)
-			}
+			return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w", err)
 		} else {
 			v.platformPublicKey = pub
 		}
@@ -124,11 +114,44 @@ func (v *wechatpayVerifier) Verify(h http.Header, body []byte) error {
 }
 
 func parseRSAPublicKeyFromPEM(pemText string) (*rsa.PublicKey, error) {
-	// Support env style with "\n" escapes.
+	pemText = strings.TrimSpace(pemText)
+	// Common CI/env pitfalls:
+	// - wrapped by quotes
+	// - newline escapes: "\n" or "\\n"
+	// - headers stuck on same line as body (no newline after BEGIN / before END)
+	if len(pemText) >= 2 {
+		if (pemText[0] == '"' && pemText[len(pemText)-1] == '"') || (pemText[0] == '\'' && pemText[len(pemText)-1] == '\'') {
+			pemText = strings.TrimSpace(pemText[1 : len(pemText)-1])
+		}
+	}
+	pemText = strings.ReplaceAll(pemText, "\r\n", "\n")
+	pemText = strings.ReplaceAll(pemText, `\\n`, "\n")
 	pemText = strings.ReplaceAll(pemText, `\n`, "\n")
+	// Ensure header/footer are on their own lines.
+	pemText = strings.ReplaceAll(pemText, "-----BEGIN PUBLIC KEY-----", "-----BEGIN PUBLIC KEY-----\n")
+	pemText = strings.ReplaceAll(pemText, "-----END PUBLIC KEY-----", "\n-----END PUBLIC KEY-----")
+	pemText = strings.ReplaceAll(pemText, "-----BEGIN CERTIFICATE-----", "-----BEGIN CERTIFICATE-----\n")
+	pemText = strings.ReplaceAll(pemText, "-----END CERTIFICATE-----", "\n-----END CERTIFICATE-----")
+
 	b := []byte(pemText)
 	block, _ := pem.Decode(b)
 	if block == nil {
+		// As a last resort: if user provided the base64 body without PEM header/footer,
+		// try decoding it as DER and parsing as public key/cert.
+		if der, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pemText)); err == nil && len(der) > 0 {
+			if pubAny, err2 := x509.ParsePKIXPublicKey(der); err2 == nil {
+				if pub, ok := pubAny.(*rsa.PublicKey); ok && pub != nil {
+					return pub, nil
+				}
+				return nil, errors.New("平台公钥不是 RSA")
+			}
+			if cert, err2 := x509.ParseCertificate(der); err2 == nil && cert != nil {
+				if pub, ok := cert.PublicKey.(*rsa.PublicKey); ok && pub != nil {
+					return pub, nil
+				}
+				return nil, errors.New("证书公钥不是 RSA")
+			}
+		}
 		return nil, errors.New("无法解析 PEM")
 	}
 	// Try PKIX first.
