@@ -14,30 +14,12 @@ COPY . .
 RUN go build -o /out/xlsconvert ./cmd/xlsconvert
 
 # Runtime: LibreOffice for .xls conversion
-FROM debian:bookworm-slim
+# Use prebuilt image to avoid apt instability in CI.
+# Includes LibreOffice + unoserver + unoconvert + lots of fonts.
+ARG XLSCONVERT_RUNTIME_BASE=ghcr.io/unoconv/unoserver-docker:latest
+FROM ${XLSCONVERT_RUNTIME_BASE}
 WORKDIR /app
 COPY --from=build /out/xlsconvert /app/xlsconvert
-
-ENV DEBIAN_FRONTEND=noninteractive
-# Use Aliyun Debian mirrors for faster/stabler installs in CN
-RUN sed -i \
-      -e 's@http://deb.debian.org/debian@http://mirrors.aliyun.com/debian@g' \
-      -e 's@https://deb.debian.org/debian@http://mirrors.aliyun.com/debian@g' \
-      -e 's@http://security.debian.org/debian-security@http://mirrors.aliyun.com/debian-security@g' \
-      -e 's@https://security.debian.org/debian-security@http://mirrors.aliyun.com/debian-security@g' \
-      /etc/apt/sources.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-      ca-certificates \
-      python3 \
-      python3-uno \
-      unoconv \
-      libreoffice-calc \
-      libreoffice-core \
-      libreoffice-common \
-      fontconfig \
-      fonts-dejavu-core \
-    && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8090
 ENV PORT=8090
