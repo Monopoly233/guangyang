@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-pandas<3
-openpyxl
-python-multipart
-xlrd==1.2.0
-

@@ -1,9 +1,7 @@
 // Dev(Vite): direct to local ports. Prod(Docker+Nginx): use same-origin reverse proxy.
 const isProd = !!import.meta.env?.PROD;
-const DEFAULT_PY_BASE = isProd ? "/py" : "http://localhost:8000";
 const DEFAULT_GO_BASE = isProd ? "/api" : "http://localhost:8080";
 
-export const PY_API_BASE = import.meta.env?.VITE_PY_API_BASE || DEFAULT_PY_BASE;
 export const GO_API_BASE = import.meta.env?.VITE_GO_API_BASE || DEFAULT_GO_BASE;
 
 async function handleJSONResponse(resp) {
@@ -19,61 +17,6 @@ async function handleJSONResponse(resp) {
     throw new Error(msg);
   }
   return data;
-}
-
-export async function estimateFee(files, params = {}) {
-  const form = new FormData();
-  (files || []).forEach((f) => form.append("files", f));
-  const query = new URLSearchParams();
-  if (params.pricing_mode) query.set("pricing_mode", params.pricing_mode);
-  if (params.rate_per_mb != null) query.set("rate_per_mb", params.rate_per_mb);
-  if (params.rate_per_1k_rows != null) query.set("rate_per_1k_rows", params.rate_per_1k_rows);
-
-  const resp = await fetch(`${PY_API_BASE}/feeguest/estimate?${query.toString()}`, {
-    method: "POST",
-    body: form,
-    credentials: "include",
-  });
-  return handleJSONResponse(resp);
-}
-
-export async function compareExcel(file1, file2, { idempotencyKey } = {}) {
-  const form = new FormData();
-  form.append("file1", file1);
-  form.append("file2", file2);
-  const headers = {};
-  if (idempotencyKey) headers["X-Idempotency-Key"] = idempotencyKey;
-  const resp = await fetch(`${PY_API_BASE}/compare/`, {
-    method: "POST",
-    headers,
-    body: form,
-    credentials: "include",
-  });
-  return handleJSONResponse(resp);
-}
-
-export async function compareExport(file1, file2, { idempotencyKey } = {}) {
-  const form = new FormData();
-  form.append("file1", file1);
-  form.append("file2", file2);
-  const headers = {};
-  if (idempotencyKey) headers["X-Idempotency-Key"] = idempotencyKey;
-  const resp = await fetch(`${PY_API_BASE}/compare/export`, {
-    method: "POST",
-    headers,
-    body: form,
-    credentials: "include",
-  });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(errText || resp.statusText);
-  }
-  const blob = await resp.blob();
-  const cd = resp.headers.get("Content-Disposition") || "";
-  const match = /filename\*=UTF-8''([^;]+)/i.exec(cd);
-  const fallback = /filename="([^"]+)"/i.exec(cd);
-  const filename = match ? decodeURIComponent(match[1]) : fallback ? fallback[1] : "compare.xlsx";
-  return { blob, filename };
 }
 
 export async function createPendingBillingEvent(amount, metadata = {}) {

@@ -4,9 +4,7 @@
 - **web**：`frontend` 构建出的静态站点 + Nginx
   - `/`：前端 SPA
   - `/api/`：反代到 Go（`go:8080`）
-  - `/py/`：反代到 Python（`py:8000`）
 - **go**：`gobackend`（包含 `/compare/jobs`、`/wechatpay/notify` 等）
-- **py**：`python/FastAPI`（Excel 对比导出等）
 
 ### 2) 本地一键启动（不走 CI）
 

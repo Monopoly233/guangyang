@@ -476,7 +476,7 @@ func (s *Service) runCompareTask(jobID string) {
 		job.File2Path = file2Path
 	}
 
-	// 1) Call Python /compare/export to generate xlsx
+	// 1) Generate export xlsx in Go (keep same semantics as previous Python implementation)
 	resultPath := filepath.Join(jobDir, "comparison_result.xlsx")
 	if err := excelcmp.GenerateCompareExportXLSX(job.File1Path, job.File2Path, job.File1Name, job.File2Name, resultPath); err != nil {
 		_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {

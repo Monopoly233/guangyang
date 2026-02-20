@@ -6,7 +6,6 @@
 **/dist
 **/__pycache__
 **/.venv
-python/FastAPI/venv
 tmp
 gobackend/tmp
 wechatpay

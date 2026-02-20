@@ -43,22 +43,18 @@ acr_build_push:
 
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
-    - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" -f python/FastAPI/Dockerfile python/FastAPI
 
     - echo "======== [3/3] 推送镜像 ========"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
-    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
 
     # main 分支额外推送 latest，方便 ACK 先用 latest 跑通
     - |
       if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
-        docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
-        docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
       fi
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -111,13 +107,15 @@ deploy_ack:
         -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' >/dev/null || true
 
     - kubectl apply -f k8s/
+    - |
+      # Python 服务已移除：apply 不会自动删除旧资源，这里显式清理残留（如存在）。
+      kubectl -n gy delete deploy/python svc/python --ignore-not-found >/dev/null 2>&1 || true
     - echo "======== (post) 固定使用本次镜像 TAG ========"
     - |
       # 避免依赖 latest 造成“拉到旧镜像/缓存镜像”导致行为不一致
       test -n "${IMAGE_TAG:-}"
       ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
-      kubectl -n gy set image deploy/python python="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
       kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
 
     - echo "======== (post) 注入计费/微信支付配置（来自 GitLab Variables） ========"
@@ -290,7 +288,6 @@ deploy_ack:
       kubectl -n gy rollout restart deploy/go >/dev/null || true
 
       kubectl -n gy rollout status deploy/go --timeout=180s
-      kubectl -n gy rollout status deploy/python --timeout=180s
       kubectl -n gy rollout status deploy/web --timeout=180s
     - kubectl -n gy get deploy,svc,pod
     - |

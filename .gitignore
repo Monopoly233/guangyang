@@ -1,9 +1,8 @@
 .DS_Store
 
-# Python
+# Python (仅用于 Go 镜像内的 unoconvert 客户端，不再有 Python 服务代码)
 .venv/
 **/__pycache__/
-python/FastAPI/venv/
 
 # Node
 frontend/node_modules/

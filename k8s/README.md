@@ -1,9 +1,8 @@
 ## ACK 部署（最小可跑通版）
 
-本目录把 `docker-compose.prod.yml` 的 3 个服务（web/go/python）平移成 Kubernetes 清单：
+本目录把 `docker-compose.prod.yml` 的服务（web/go）平移成 Kubernetes 清单：
 
 - `00-namespace.yaml`：namespace `gy`
-- `10-python.yaml`：FastAPI（Service: `python:8000`）
 - `20-go.yaml`：Go API（Service: `go:8080`）
 - `30-web.yaml`：Nginx 静态站点（Service: `web:80`）
 - `40-albconfig-ingressclass.yaml`：复用现成 ALB 的 AlbConfig + IngressClass（名字：`gy-alb`）
@@ -15,7 +14,6 @@
 
 - `guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/web:latest`
 - `guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest`
-- `guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/python:latest`
 
 2. ACK 集群能拉取 ACR 私有镜像：
    - 如果你集群安装了 `managed-aliyun-acr-credential-helper` 并配置 OK，通常无需额外 secret。
@@ -42,7 +40,6 @@ kubectl apply -f k8s/
 ```bash
 kubectl -n gy get deploy,svc,pod
 kubectl -n gy logs deploy/go --tail=50
-kubectl -n gy logs deploy/python --tail=50
 ```
 
 Go 健康检查：

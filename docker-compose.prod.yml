@@ -8,7 +8,6 @@ services:
       - "8088:80"
     depends_on:
       - go
-      - py
     networks:
       - appnet
 
@@ -19,7 +18,6 @@ services:
       dockerfile: Dockerfile
     environment:
       - PORT=8080
-      - PY_API_BASE=http://py:8000
       - CORS_ALLOW_ORIGIN=*
       # WeChatPay config (建议用 .env / env.prod 或 CI 变量注入；不要写死在这里)
       - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
@@ -38,19 +36,6 @@ services:
       - /opt/app/gy/tmp:/app/tmp
     expose:
       - "8080"
-    networks:
-      - appnet
-
-  py:
-    image: ${CI_REGISTRY_IMAGE:-gy}/py:${IMAGE_TAG:-latest}
-    build:
-      context: ./python/FastAPI
-      dockerfile: Dockerfile
-    environment:
-      - PORT=8000
-      - CORS_ALLOW_ORIGINS=*
-    expose:
-      - "8000"
     networks:
       - appnet
 
