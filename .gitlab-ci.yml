@@ -52,13 +52,12 @@ acr_build_push:
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
       fi
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # 预留：后续接 ACK 自动部署（kubectl/helm）
 deploy_ack:
   stage: deploy
-  script:
-    - echo "TODO: deploy to ACK (kubectl/helm)"
-  when: manual
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script: 'echo "TODO: deploy to ACK (kubectl/helm)"'
