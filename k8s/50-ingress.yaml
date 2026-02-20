@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gy-ingress
+  namespace: gy
+  annotations:
+    # 仅先开 80，后续需要 443 再加 TLS/listen-ports 注解
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+spec:
+  ingressClassName: gy-alb
+  rules:
+    - host: api.guangyang.online
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: pay.guangyang.online
+      http:
+        paths:
+          - path: /wechatpay/
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: www.guangyang.online
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+

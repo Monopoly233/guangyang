@@ -6,6 +6,8 @@
 - `10-python.yaml`：FastAPI（Service: `python:8000`）
 - `20-go.yaml`：Go API（Service: `go:8080`）
 - `30-web.yaml`：Nginx 静态站点（Service: `web:80`）
+- `40-albconfig-ingressclass.yaml`：复用现成 ALB 的 AlbConfig + IngressClass（名字：`gy-alb`）
+- `50-ingress.yaml`：ALB Ingress 规则（`api/pay/www` → `go/web`）
 
 ### 前置条件
 
@@ -49,6 +51,17 @@ Go 健康检查：
 kubectl -n gy port-forward svc/go 18080:8080
 curl -sS http://127.0.0.1:18080/healthz
 ```
+
+### ALB Ingress
+
+本仓库提供了可直接 apply 的 ALB 入口配置：
+
+- IngressClass：`gy-alb`
+- Ingress：`gy/gy-ingress`
+
+注意：
+- `k8s/40-albconfig-ingressclass.yaml` 中写死了 ALB 实例 ID：`alb-r8l72kghnnh97b0epj`（如你更换 ALB，需要同步修改）
+- 目前仅监听 80（HTTP）。你后续要走 Cloudflare Full(strict) + 443 时，再在 ALB 上配置 Origin 证书并把 Ingress 扩展到 443。
 
 ### 注意（微信回调）
 

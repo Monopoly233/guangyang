@@ -1,0 +1,29 @@
+apiVersion: alibabacloud.com/v1
+kind: AlbConfig
+metadata:
+  # AlbConfig 通常放在 kube-system（ACK 控制面组件便于统一管理）
+  name: gy-alb
+  namespace: kube-system
+spec:
+  config:
+    # 复用你在 ALB 控制台创建的实例（必须是 Standard/WAF 版；Basic 版不可复用）
+    # 你的实例 ID（截图里）：alb-r8l72kghnnh97b0epj
+    id: alb-r8l72kghnnh97b0epj
+    forceOverride: false
+    listenerForceOverride: false
+  listeners:
+    - port: 80
+      protocol: HTTP
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  # 这个名字会出现在 ACK 控制台的 Ingress Class 下拉框里
+  name: gy-alb
+spec:
+  controller: ingress.k8s.alibabacloud/alb
+  parameters:
+    apiGroup: alibabacloud.com
+    kind: AlbConfig
+    name: gy-alb
+
