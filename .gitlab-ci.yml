@@ -138,6 +138,13 @@ deploy_ack:
           --from-literal="WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}" \
           --from-literal="WECHAT_MOCK=${WECHAT_MOCK:-0}" \
           --dry-run=client -o yaml | kubectl apply -f -
+        # 重要：Secret 的 apply 是 merge 语义，历史上如果写入过坏的 WECHAT_PLATFORM_PUBLIC_KEY，
+        # 即使你现在改走 pub_key.pem 文件注入，Pod 仍可能优先读到这个坏 env 并报 "无法解析 PEM"。
+        # 这里强制移除这些 key，让程序回退读 /app/wechatpay/cert/pub_key.pem（或 platform_cert.pem）。
+        kubectl -n gy patch secret wechatpay-env --type=json \
+          -p='[{"op":"remove","path":"/data/WECHAT_PLATFORM_PUBLIC_KEY"}]' >/dev/null 2>&1 || true
+        kubectl -n gy patch secret wechatpay-env --type=json \
+          -p='[{"op":"remove","path":"/data/WECHAT_PLATFORM_PUBLIC_KEY_PEM"}]' >/dev/null 2>&1 || true
       else
         echo "skip wechatpay-env: required vars missing (set WECHAT_NOTIFY_URL/WECHAT_MCHID/WECHAT_PAY_APPID/WECHAT_API_V3_KEY)"
       fi
