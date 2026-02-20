@@ -12,18 +12,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-func main() {
-	// Start a persistent LibreOffice listener via unoserver to avoid per-request cold start.
-	// This keeps LibreOffice warm in the container.
-	if err := startUnoserver("127.0.0.1", "2003", "127.0.0.1", "2002"); err != nil {
-		log.Fatalf("failed to start unoserver: %v", err)
-	}
+var listenerReady atomic.Bool
 
+func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("/readyz", handleReadyz)
 	mux.HandleFunc("/convert", handleConvert)
 
 	addr := ":" + readEnvDefault("PORT", "8090")
@@ -33,15 +31,37 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Start a persistent LibreOffice listener via unoserver in background.
+	go func() {
+		log.Printf("starting unoserver listener ...")
+		if err := startUnoserver("127.0.0.1", "2003", "127.0.0.1", "2002"); err != nil {
+			log.Printf("unoserver failed: %v", err)
+			return
+		}
+		listenerReady.Store(true)
+		log.Printf("unoserver listener ready")
+	}()
+
 	log.Fatal(srv.ListenAndServe())
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
-	// Healthy only if listener port is accepting connections.
-	if err := waitTCP("127.0.0.1:2003", 200*time.Millisecond, 1); err != nil {
+	// Liveness: process is up.
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleReadyz(w http.ResponseWriter, r *http.Request) {
+	// Readiness: listener is accepting connections.
+	if listenerReady.Load() {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := waitTCP("127.0.0.1:2003", 200*time.Millisecond, 2); err != nil {
 		http.Error(w, "listener not ready", http.StatusServiceUnavailable)
 		return
 	}
+	listenerReady.Store(true)
 	w.WriteHeader(http.StatusOK)
 }
 
