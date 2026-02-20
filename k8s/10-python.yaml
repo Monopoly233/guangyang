@@ -4,8 +4,7 @@ metadata:
   name: python
   namespace: gy
 spec:
-  # Go 已内置 Excel 比对/导出（含 xls 转换），默认不再需要 python 服务
-  replicas: 0
+  replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:

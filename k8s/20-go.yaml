@@ -24,15 +24,14 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            - name: PY_API_BASE
+              value: "http://python:8000"
             - name: CORS_ALLOW_ORIGIN
               value: "*"
             - name: COMPARE_JOB_FEE_FEN
               value: "1"
             - name: TMP_ROOT
               value: "/app/tmp"
-            # .xls 转换微服务（避免 Go 镜像带 LibreOffice）
-            - name: XLS_CONVERT_BASE
-              value: "http://xlsconvert:8090"
             - name: REDIS_ADDR
               value: "10.0.40.253:6379"
             # OSS：对比结果上传 + export 走签名下载链接（RRSA 自动拿临时凭证）

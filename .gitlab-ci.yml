@@ -43,14 +43,11 @@ acr_build_push:
 
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
-    # xlsconvert：只负责 .xls 转换（LibreOffice 常驻 listener），镜像较大但使用频率低
-    - docker build --pull -t "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" -f gobackend/cmd/xlsconvert/Dockerfile gobackend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" -f python/FastAPI/Dockerfile python/FastAPI
 
     - echo "======== [3/3] 推送镜像 ========"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
-    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
 
     # main 分支额外推送 latest，方便 ACK 先用 latest 跑通
@@ -58,11 +55,9 @@ acr_build_push:
       if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
-        docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
         docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
-        docker push "$ACR_REGISTRY/$ACR_NAMESPACE/xlsconvert:latest"
         docker push "$ACR_REGISTRY/$ACR_NAMESPACE/python:latest"
       fi
   rules:
@@ -122,7 +117,6 @@ deploy_ack:
       test -n "${IMAGE_TAG:-}"
       ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
-      kubectl -n gy set image deploy/xlsconvert xlsconvert="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/xlsconvert:$IMAGE_TAG" >/dev/null 2>&1 || true
       kubectl -n gy set image deploy/python python="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/python:$IMAGE_TAG"
       kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
 
