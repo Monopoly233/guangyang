@@ -254,14 +254,20 @@ func (s *CompareService) handleGetJob(w http.ResponseWriter, r *http.Request, jo
 		http.NotFound(w, r)
 		return
 	}
+	// 防御性：若已支付且结果已生成，但状态仍停留在 awaiting_payment，则对外视为 ready
+	// （避免轮询端一直弹支付框）。
+	status := job.Status
+	if status == CompareJobStatusAwaitingPayment && job.Paid && job.ResultPath != "" {
+		status = CompareJobStatusReady
+	}
 	// Return a safe subset
 	resp := map[string]interface{}{
 		"jobId":     job.ID,
-		"status":    string(job.Status),
+		"status":    string(status),
 		"createdAt": job.CreatedAt,
 		"paid":      job.Paid,
 	}
-	if job.Status == CompareJobStatusAwaitingPayment {
+	if status == CompareJobStatusAwaitingPayment {
 		resp["amount"] = job.AmountYuan
 		resp["code_url"] = job.CodeURL
 	}

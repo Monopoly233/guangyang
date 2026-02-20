@@ -31,6 +31,8 @@ type wechatpayTransaction struct {
 
 func (s *CompareService) registerWechatpayRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/wechatpay/notify", s.handleWechatpayNotify)
+	// 兼容末尾多一个 "/" 的 notify_url（Go 的 ServeMux 对不带 "/" 结尾的 pattern 是精确匹配）
+	mux.HandleFunc("/wechatpay/notify/", s.handleWechatpayNotify)
 }
 
 func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +44,8 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	log.Printf("wechatpay notify: hit path=%s", r.URL.Path)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -123,9 +127,15 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 			}
 			j.Paid = true
 			j.PaidAt = &now
-			// 如果结果已生成，则放行；否则等待 worker 完成后再放行
-			if j.ResultPath != "" && (j.Status == CompareJobStatusAwaitingPayment || j.Status == CompareJobStatusProcessing || j.Status == CompareJobStatusCancelled) {
+			// 如果结果已生成，则放行；否则先退出“等待支付”，继续轮询直到 ready。
+			if j.ResultPath != "" && (j.Status == CompareJobStatusAwaitingPayment || j.Status == CompareJobStatusProcessing) {
 				j.Status = CompareJobStatusReady
+				j.AmountYuan = 0
+				j.CodeURL = ""
+				return
+			}
+			if j.Status == CompareJobStatusAwaitingPayment {
+				j.Status = CompareJobStatusProcessing
 			}
 		})
 		if !ok {
@@ -143,4 +153,3 @@ func (s *CompareService) handleWechatpayNotify(w http.ResponseWriter, r *http.Re
 
 	writeJSON(w, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "OK"})
 }
-
