@@ -36,10 +36,7 @@ class ComparePage extends React.Component {
 
   componentWillUnmount() {
     this._isMounted = false;
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer);
-      this._pollTimer = null;
-    }
+    this.stopPolling();
     const le = this.state.lastExport;
     if (le && le.url) {
       URL.revokeObjectURL(le.url);
@@ -73,10 +70,7 @@ class ComparePage extends React.Component {
     // Always hide modal immediately for responsiveness.
     this.setState({ showPayModal: false, error: undefined });
 
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer);
-      this._pollTimer = null;
-    }
+    this.stopPolling();
 
     if (!jobId) {
       this.setState({ jobStatus: "cancelled", error: "订单已取消" });
@@ -93,9 +87,21 @@ class ComparePage extends React.Component {
     }
   };
 
+  stopPolling = () => {
+    if (this._pollTimer) {
+      clearTimeout(this._pollTimer);
+      this._pollTimer = null;
+    }
+    this._pollDelayMs = undefined;
+    this._pollFailures = 0;
+  };
+
   startPolling = (jobId) => {
-    if (this._pollTimer) clearInterval(this._pollTimer);
-    this._pollTimer = setInterval(async () => {
+    this.stopPolling();
+    this._pollDelayMs = 900;
+    this._pollFailures = 0;
+
+    const pollOnce = async () => {
       try {
         const j = await getCompareJob(jobId);
         const status = j?.status;
@@ -112,30 +118,46 @@ class ComparePage extends React.Component {
         }
 
         if (status === "failed") {
-          clearInterval(this._pollTimer);
-          this._pollTimer = null;
+          this.stopPolling();
           this.setState({ loading: false, error: j?.error || "任务失败" });
           return;
         }
 
         if (status === "cancelled") {
-          clearInterval(this._pollTimer);
-          this._pollTimer = null;
+          this.stopPolling();
           this.setState({ loading: false, showPayModal: false, error: "订单已取消" });
           return;
         }
 
         if (status === "ready") {
-          clearInterval(this._pollTimer);
-          this._pollTimer = null;
+          this.stopPolling();
           this.setState({ showPayModal: false });
           await this.fetchAndPreview(jobId);
+          return;
         }
+
+        // Schedule next poll (adaptive)
+        if (status === "awaiting_payment") {
+          this._pollDelayMs = 1500;
+        } else {
+          // processing: exponential-ish backoff to reduce load
+          const d = Number(this._pollDelayMs || 900);
+          this._pollDelayMs = Math.min(5000, Math.floor(d * 1.25));
+        }
+        this._pollTimer = setTimeout(pollOnce, this._pollDelayMs);
       } catch (err) {
         // 轮询错误不立刻终止，避免偶发网络抖动
         this.setState({ error: err.message });
+        const failures = Number(this._pollFailures || 0) + 1;
+        this._pollFailures = failures;
+        const base = Number(this._pollDelayMs || 900);
+        const next = Math.min(8000, Math.floor(base * (1.4 + Math.min(3, failures) * 0.2)));
+        this._pollDelayMs = next;
+        this._pollTimer = setTimeout(pollOnce, next);
       }
-    }, 1200);
+    };
+
+    this._pollTimer = setTimeout(pollOnce, this._pollDelayMs);
   };
 
   fetchAndPreview = async (jobId) => {

@@ -2,6 +2,7 @@ package compare
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"gobackend/cache"
 	"gobackend/domain"
 	"gobackend/ossstore"
 	"gobackend/queue"
@@ -31,6 +33,7 @@ type Service struct {
 	pyAPIBase string
 	inflight  chan struct{}
 	oss       *ossstore.Store
+	cache     cache.ResultCache
 }
 
 var pythonHTTPClient = &http.Client{
@@ -47,7 +50,7 @@ var pythonHTTPClient = &http.Client{
 	Timeout: 180 * time.Second,
 }
 
-func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string, oss *ossstore.Store) *Service {
+func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPIBase string, oss *ossstore.Store, rc cache.ResultCache) *Service {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
@@ -59,6 +62,7 @@ func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot, pyAPI
 		pyAPIBase: strings.TrimRight(pyAPIBase, "/"),
 		inflight:  make(chan struct{}, maxInflight),
 		oss:       oss,
+		cache:     rc,
 	}
 }
 
@@ -113,6 +117,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var (
 		file1Path string
 		file2Path string
+		file1SHA  string
+		file2SHA  string
 	)
 	for {
 		part, err := mr.NextPart()
@@ -139,7 +145,7 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		if name == "file2" {
 			prefix = "file2_"
 		}
-		dst, err := saveUploadTo(jobDir, prefix+fn, part)
+		dst, sha, err := saveUploadToWithSHA(jobDir, prefix+fn, part)
 		_ = part.Close()
 		if err != nil {
 			http.Error(w, "failed to save "+name, http.StatusInternalServerError)
@@ -147,13 +153,57 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		if name == "file1" {
 			file1Path = dst
+			file1SHA = sha
 		} else {
 			file2Path = dst
+			file2SHA = sha
 		}
 	}
 	if file1Path == "" || file2Path == "" {
 		http.Error(w, "missing file1 or file2", http.StatusBadRequest)
 		return
+	}
+
+	// Cache hit: if the same pair was compared before, skip Python compute.
+	cacheKey := compareCacheKey(file1SHA, file2SHA)
+	if s.cache != nil && cacheKey != "" {
+		if ossKey, ok, _ := s.cache.Get(cacheKey); ok && strings.TrimSpace(ossKey) != "" {
+			feeFen := FeeFen()
+			now := time.Now()
+			job := &domain.CompareJob{
+				ID:          jobID,
+				CreatedAt:   now,
+				File1Path:   file1Path,
+				File2Path:   file2Path,
+				File1SHA256: file1SHA,
+				File2SHA256: file2SHA,
+				ResultOSSKey: strings.TrimSpace(ossKey),
+				Paid:        false,
+			}
+			if feeFen <= 0 {
+				job.Paid = true
+				job.PaidAt = &now
+				job.Status = domain.CompareJobStatusReady
+				job.AmountYuan = 0
+				job.CodeURL = ""
+			} else {
+				codeURL, err := wechat.CreateNativeOrder(jobID, feeFen)
+				if err != nil {
+					job.Status = domain.CompareJobStatusFailed
+					job.Error = "创建微信支付订单失败: " + err.Error()
+				} else {
+					job.Status = domain.CompareJobStatusAwaitingPayment
+					job.AmountYuan = float64(feeFen) / 100.0
+					job.CodeURL = codeURL
+				}
+			}
+			_ = s.store.Create(job)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"jobId":  jobID,
+				"status": string(job.Status),
+			})
+			return
+		}
 	}
 
 	job := &domain.CompareJob{
@@ -162,6 +212,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 		File1Path: file1Path,
 		File2Path: file2Path,
+		File1SHA256: file1SHA,
+		File2SHA256: file2SHA,
 		Paid:      false,
 	}
 	_ = s.store.Create(job)
@@ -437,6 +489,26 @@ func saveUploadTo(dir, name string, src io.Reader) (string, error) {
 	return dstPath, nil
 }
 
+func saveUploadToWithSHA(dir, name string, src io.Reader) (string, string, error) {
+	if dir == "" || name == "" {
+		return "", "", errors.New("invalid path")
+	}
+	dstPath := filepath.Join(dir, name)
+	f, err := os.Create(dstPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	w := io.MultiWriter(f, h)
+	if _, err := io.Copy(w, src); err != nil {
+		return "", "", err
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	return dstPath, sum, nil
+}
+
 func (s *Service) runCompareTask(jobID string) {
 	// Backpressure: limit concurrent compare executions per pod.
 	s.acquireInflight()
@@ -494,6 +566,13 @@ func (s *Service) runCompareTask(jobID string) {
 		}
 		j.ResultPath = resultPath
 	})
+
+	// Populate dedup cache (best effort): inputHash -> resultOssKey
+	if ossKey != "" && s.cache != nil && job != nil {
+		if ck := compareCacheKey(job.File1SHA256, job.File2SHA256); ck != "" {
+			_ = s.cache.Set(ck, ossKey)
+		}
+	}
 
 	// Refresh job state after generating result (Paid/Cancelled may change concurrently).
 	job, ok, err = s.store.Get(jobID)
@@ -578,6 +657,19 @@ func hasResult(job *domain.CompareJob) bool {
 		return false
 	}
 	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
+}
+
+func compareCacheKey(file1SHA, file2SHA string) string {
+	a := strings.TrimSpace(file1SHA)
+	b := strings.TrimSpace(file2SHA)
+	if a == "" || b == "" {
+		return ""
+	}
+	// stable ordering to avoid (a,b) vs (b,a)
+	if a > b {
+		a, b = b, a
+	}
+	return a + ":" + b
 }
 
 func callPythonCompareExport(pyBase, file1Path, file2Path, outXLSXPath string) error {

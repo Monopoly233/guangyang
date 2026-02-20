@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"gobackend/cache"
 	"gobackend/compare"
 	"gobackend/ossstore"
 	"gobackend/queue"
@@ -145,7 +146,17 @@ func main() {
 		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
 	}
 
-	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase, ossSt)
+	var rc cache.ResultCache
+	if c, enabled, err := cache.NewRedisResultCacheFromEnv(); err != nil {
+		if enabled {
+			log.Fatalf("init redis result cache failed: %v", err)
+		}
+	} else if enabled {
+		rc = c
+		log.Printf("compare result cache enabled")
+	}
+
+	compareSvc := compare.NewService(jobStore, q, tmpRoot, pyBase, ossSt, rc)
 	compareSvc.RegisterRoutes(mux)
 	wechat.RegisterNotifyRoutes(mux, jobStore, q)
 

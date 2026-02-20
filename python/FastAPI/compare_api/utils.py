@@ -277,11 +277,16 @@ def compare_excel_tables_df(
 
     # 先用“快速比较”筛出疑似不同的行，避免对整个表逐单元格做 Python 归一化（非常慢）。
     # 注意：NaN != NaN 的问题需要当成相等处理。
+    diff_fast = None
+    cand_cols = None
     try:
         diff_fast = a.ne(b)
         both_na = a.isna() & b.isna()
         diff_fast = diff_fast & (~both_na)
         cand_rows = diff_fast.any(axis=1)
+        # 进一步缩小“严格归一化”的列集合：只对疑似不同的列做归一化比较
+        if cand_rows.any():
+            cand_cols = diff_fast.loc[cand_rows].any(axis=0)
     except Exception:
         # 兜底：如果遇到不可比对象导致向量化比较失败，就退回全量严格比较。
         cand_rows = pd.Series(True, index=a.index)
@@ -293,8 +298,16 @@ def compare_excel_tables_df(
     b_sub = b.loc[cand_rows]
 
     # 对“疑似不同”的行再做严格归一化比较（避免空值/数字格式导致误判）
-    a_cmp = a_sub.apply(lambda s: s.map(_normalize_scalar_for_compare))
-    b_cmp = b_sub.apply(lambda s: s.map(_normalize_scalar_for_compare))
+    # 只归一化“疑似不同”的列，可显著减少 Python-level map 的次数。
+    if cand_cols is not None and getattr(cand_cols, "any", lambda: False)():
+        cols_to_check = [c for c, v in cand_cols.items() if bool(v)]
+        if not cols_to_check:
+            cols_to_check = all_cols
+    else:
+        cols_to_check = all_cols
+
+    a_cmp = a_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
+    b_cmp = b_sub[cols_to_check].apply(lambda s: s.map(_normalize_scalar_for_compare))
     diff_mask = a_cmp.ne(b_cmp)
     rows_with_diff = diff_mask.any(axis=1)
     if not rows_with_diff.any():
