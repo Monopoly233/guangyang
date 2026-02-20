@@ -72,7 +72,7 @@ curl -sS http://127.0.0.1:18080/healthz
 如需在 ACK 上做真实支付联调（例如把 compare 费用设为 0.01 元）：
 
 1. 按模板创建 Secret（不要把真实密钥提交到 git）：
-   - `k8s/16-wechatpay-secrets.template.yaml`（`wechatpay-env` + `wechatpay-cert`）
+   - `k8s/_templates/16-wechatpay-secrets.template.yaml`（`wechatpay-env` + `wechatpay-cert`，注意不要直接 apply 到集群）
 2. 确保 `gy/go` Deployment 已挂载 `/app/wechatpay/cert` 且能读到：
    - `merchant_key.pem`、`merchant_cert.pem`
    - 平台验签材料二选一：
