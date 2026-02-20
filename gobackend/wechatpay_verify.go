@@ -39,9 +39,20 @@ func loadWechatpayVerifier() (*wechatpayVerifier, error) {
 	if pemText := strings.TrimSpace(readWechatPlatformPublicKeyPEM()); pemText != "" {
 		pub, err := parseRSAPublicKeyFromPEM(pemText)
 		if err != nil {
-			return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w", err)
+			// If env exists but is malformed (common: missing END line / newlines mangled),
+			// fall back to mounted file/cached key extracted from zip.
+			if fallback := strings.TrimSpace(readWechatPlatformPublicKeyPEMFromFiles()); fallback != "" {
+				if pub2, err2 := parseRSAPublicKeyFromPEM(fallback); err2 == nil {
+					v.platformPublicKey = pub2
+				} else {
+					return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w（同时从文件/缓存读取平台公钥也失败: %v）", err, err2)
+				}
+			} else {
+				return nil, fmt.Errorf("解析 WECHAT_PLATFORM_PUBLIC_KEY 失败: %w（且未找到 wechatpay/cert/platform_public_key.pem 或缓存公钥可回退）", err)
+			}
+		} else {
+			v.platformPublicKey = pub
 		}
-		v.platformPublicKey = pub
 	}
 
 	if v.platformCert == nil && v.platformPublicKey == nil {

@@ -116,6 +116,10 @@ func readWechatPlatformPublicKeyPEM() string {
 	if v := inferFromApikeyFile("WECHAT_PLATFORM_PUBLIC_KEY"); v != "" {
 		return v
 	}
+	return readWechatPlatformPublicKeyPEMFromFiles()
+}
+
+func readWechatPlatformPublicKeyPEMFromFiles() string {
 	// Optional: allow mounting a pem file instead of embedding multi-line env.
 	// Put it at: wechatpay/cert/platform_public_key.pem (or pub_key.pem for convenience)
 	for _, p := range []string{
