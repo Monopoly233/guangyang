@@ -3,8 +3,10 @@ package excelcmp
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var primaryKeyCandidates = []string{"id", "编号", "编码", "资产编号", "序号", "资产号", "code", "no", "序列号"}
@@ -97,9 +99,9 @@ type Artifacts struct {
 
 	// Only differing keys (normalized key as string)
 	DiffKeys  []string
-	LeftRows  map[string]map[string]string // key -> col -> value (ordered cols)
-	RightRows map[string]map[string]string // key -> col -> value
-	DiffMask  map[string]map[string]bool   // key -> col -> isDiff
+	LeftRows  map[string][]string // key -> values aligned with OrderedCols
+	RightRows map[string][]string // key -> values aligned with OrderedCols
+	DiffMask  map[string][]bool   // key -> mask aligned with OrderedCols
 }
 
 func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
@@ -124,6 +126,13 @@ func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
 	if len(dup2) > 0 {
 		return nil, fmt.Errorf("文件2主键列“%s”存在重复值（示例: %v），请先去重或修正后再比对", key, dup2)
 	}
+	return compareArtifactsFromMaps(file1.Headers, file2.Headers, m1, m2, key)
+}
+
+func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]string, key string) (*Artifacts, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, errors.New("主键列为空")
+	}
 
 	only1 := make([]string, 0)
 	only2 := make([]string, 0)
@@ -147,10 +156,14 @@ func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
 	sort.Strings(only2)
 	sort.Strings(common)
 
-	reduced := buildSubTable(file1, only1, m1)
-	increased := buildSubTable(file2, only2, m2)
+	reduced := buildSubTableFromMap(headers1, only1, m1)
+	increased := buildSubTableFromMap(headers2, only2, m2)
 
-	orderedCols := orderedUnionCols(file1.Headers, file2.Headers, key)
+	orderedCols := orderedUnionCols(headers1, headers2, key)
+
+	hidx1 := headerIndexMap(headers1)
+	hidx2 := headerIndexMap(headers2)
+	colIdx1, colIdx2 := alignedColumnIndices(orderedCols, hidx1, hidx2)
 
 	art := &Artifacts{
 		Key:         key,
@@ -158,26 +171,38 @@ func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
 		Increased:   increased,
 		OrderedCols: orderedCols,
 		DiffKeys:    nil,
-		LeftRows:    map[string]map[string]string{},
-		RightRows:   map[string]map[string]string{},
-		DiffMask:    map[string]map[string]bool{},
+		LeftRows:    map[string][]string{},
+		RightRows:   map[string][]string{},
+		DiffMask:    map[string][]bool{},
 	}
 
 	if len(common) == 0 {
 		return art, nil
 	}
 
-	// Determine differing keys
-	for _, k := range common {
+	type diffResult struct {
+		hasDiff bool
+		left    []string
+		right   []string
+		mask    []bool
+	}
+
+	// 大文件时并行算 diff，但保持输出顺序完全确定（按 common 的排序顺序收敛）。
+	// 阈值：避免小文件 goroutine/调度开销反而变慢。
+	shouldParallel := len(common) >= 2000 && len(orderedCols) >= 20
+	results := make([]diffResult, len(common))
+
+	work := func(idx int) {
+		k := common[idx]
 		r1 := m1[k]
 		r2 := m2[k]
-		diffCols := make(map[string]bool, len(orderedCols))
 		hasDiff := false
-		left := make(map[string]string, len(orderedCols))
-		right := make(map[string]string, len(orderedCols))
-		for _, col := range orderedCols {
-			i1 := indexOfHeader(file1.Headers, col)
-			i2 := indexOfHeader(file2.Headers, col)
+		left := make([]string, len(orderedCols))
+		right := make([]string, len(orderedCols))
+		mask := make([]bool, len(orderedCols))
+		for i := 0; i < len(orderedCols); i++ {
+			i1 := colIdx1[i]
+			i2 := colIdx2[i]
 			var v1, v2 string
 			if i1 >= 0 && i1 < len(r1) {
 				v1 = r1[i1]
@@ -185,8 +210,8 @@ func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
 			if i2 >= 0 && i2 < len(r2) {
 				v2 = r2[i2]
 			}
-			left[col] = v1
-			right[col] = v2
+			left[i] = v1
+			right[i] = v2
 
 			n1 := normalizeScalarForCompare(v1)
 			n2 := normalizeScalarForCompare(v2)
@@ -194,14 +219,50 @@ func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
 			if isDiff {
 				hasDiff = true
 			}
-			diffCols[col] = isDiff
+			mask[i] = isDiff
 		}
-		if hasDiff {
-			art.DiffKeys = append(art.DiffKeys, k)
-			art.LeftRows[k] = left
-			art.RightRows[k] = right
-			art.DiffMask[k] = diffCols
+		results[idx] = diffResult{hasDiff: hasDiff, left: left, right: right, mask: mask}
+	}
+
+	if shouldParallel {
+		workers := runtime.GOMAXPROCS(0)
+		if workers < 2 {
+			workers = 2
 		}
+		if workers > len(common) {
+			workers = len(common)
+		}
+		ch := make(chan int, workers*2)
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func() {
+				defer wg.Done()
+				for idx := range ch {
+					work(idx)
+				}
+			}()
+		}
+		for i := 0; i < len(common); i++ {
+			ch <- i
+		}
+		close(ch)
+		wg.Wait()
+	} else {
+		for i := 0; i < len(common); i++ {
+			work(i)
+		}
+	}
+
+	for i, k := range common {
+		r := results[i]
+		if !r.hasDiff {
+			continue
+		}
+		art.DiffKeys = append(art.DiffKeys, k)
+		art.LeftRows[k] = r.left
+		art.RightRows[k] = r.right
+		art.DiffMask[k] = r.mask
 	}
 	return art, nil
 }
@@ -213,6 +274,32 @@ func indexOfHeader(headers []string, name string) int {
 		}
 	}
 	return -1
+}
+
+func headerIndexMap(headers []string) map[string]int {
+	m := make(map[string]int, len(headers))
+	for i, h := range headers {
+		m[h] = i
+	}
+	return m
+}
+
+func alignedColumnIndices(cols []string, hidx1, hidx2 map[string]int) ([]int, []int) {
+	i1 := make([]int, len(cols))
+	i2 := make([]int, len(cols))
+	for i, c := range cols {
+		if v, ok := hidx1[c]; ok {
+			i1[i] = v
+		} else {
+			i1[i] = -1
+		}
+		if v, ok := hidx2[c]; ok {
+			i2[i] = v
+		} else {
+			i2[i] = -1
+		}
+	}
+	return i1, i2
 }
 
 func buildKeyRowMap(tbl *Table, keyIdx int) (map[string][]string, []string) {
@@ -236,10 +323,8 @@ func buildKeyRowMap(tbl *Table, keyIdx int) (map[string][]string, []string) {
 			}
 			continue
 		}
-		// Copy row to avoid aliasing.
-		cp := make([]string, len(row))
-		copy(cp, row)
-		out[k] = cp
+		// Row is immutable; store directly to avoid extra allocations.
+		out[k] = row
 	}
 	return out, dups
 }
@@ -255,15 +340,34 @@ func buildSubTable(src *Table, keys []string, m map[string][]string) *Table {
 	out.Rows = make([][]string, 0, len(keys))
 	for _, k := range keys {
 		if row, ok := m[k]; ok {
-			cp := make([]string, len(out.Headers))
-			for i := 0; i < len(out.Headers); i++ {
-				if i < len(row) {
-					cp[i] = row[i]
-				} else {
-					cp[i] = ""
-				}
+			if len(row) == len(out.Headers) {
+				out.Rows = append(out.Rows, row)
+				continue
 			}
+			// Fallback padding (shouldn't happen for xlsx reader).
+			cp := make([]string, len(out.Headers))
+			copy(cp, row)
 			out.Rows = append(out.Rows, cp)
+		}
+	}
+	return out
+}
+
+func buildSubTableFromMap(headers []string, keys []string, m map[string][]string) *Table {
+	out := &Table{Headers: append([]string(nil), headers...)}
+	if len(keys) == 0 {
+		return out
+	}
+	out.Rows = make([][]string, 0, len(keys))
+	for _, k := range keys {
+		if row, ok := m[k]; ok {
+			if len(row) == len(out.Headers) {
+				out.Rows = append(out.Rows, row)
+			} else {
+				cp := make([]string, len(out.Headers))
+				copy(cp, row)
+				out.Rows = append(out.Rows, cp)
+			}
 		}
 	}
 	return out

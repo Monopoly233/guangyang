@@ -19,24 +19,22 @@ func GenerateCompareExportXLSX(file1Path, file2Path, file1Name, file2Name, outPa
 		return errors.New("输出路径为空")
 	}
 
-	t1, err := readXLSXFirstSheetTable(file1Path)
+	// Stream-read xlsx: only peek first 5 rows to guess key, then build key->row map.
+	s1, dup1, err := loadKeyedSheetXLSX(file1Path, 5, "", true)
 	if err != nil {
 		return fmt.Errorf("读取文件1失败: %w", err)
 	}
-	t2, err := readXLSXFirstSheetTable(file2Path)
+	if len(dup1) > 0 {
+		return fmt.Errorf("文件1主键列“%s”存在重复值（示例: %v），请先去重或修正后再比对", s1.Key, dup1)
+	}
+	s2, dup2, err := loadKeyedSheetXLSX(file2Path, 0, s1.Key, false)
 	if err != nil {
 		return fmt.Errorf("读取文件2失败: %w", err)
 	}
-
-	key, ok := GuessPrimaryKeyColumn(t1, 5)
-	if !ok {
-		return errors.New("无法猜测主键列，请确保包含明显的编号列")
+	if len(dup2) > 0 {
+		return fmt.Errorf("文件2主键列“%s”存在重复值（示例: %v），请先去重或修正后再比对", s1.Key, dup2)
 	}
-	if indexOfHeader(t1.Headers, key) < 0 || indexOfHeader(t2.Headers, key) < 0 {
-		return fmt.Errorf("Excel文件中必须同时包含%q列", key)
-	}
-
-	art, err := CompareArtifacts(t1, t2, key)
+	art, err := compareArtifactsFromMaps(s1.Headers, s2.Headers, s1.RowsByKey, s2.RowsByKey, s1.Key)
 	if err != nil {
 		return err
 	}
@@ -172,18 +170,21 @@ func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, f
 	for _, k := range art.DiffKeys {
 		row := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
 		row = append(row, safeCellValue(k))
-		for _, c := range art.OrderedCols {
+		left := art.LeftRows[k]
+		right := art.RightRows[k]
+		mask := art.DiffMask[k]
+		for i := 0; i < len(art.OrderedCols); i++ {
 			va := ""
 			vb := ""
-			if art.LeftRows != nil && art.LeftRows[k] != nil {
-				va = art.LeftRows[k][c]
+			if i < len(left) {
+				va = left[i]
 			}
-			if art.RightRows != nil && art.RightRows[k] != nil {
-				vb = art.RightRows[k][c]
+			if i < len(right) {
+				vb = right[i]
 			}
 			isDiff := false
-			if art.DiffMask != nil && art.DiffMask[k] != nil {
-				isDiff = art.DiffMask[k][c]
+			if i < len(mask) {
+				isDiff = mask[i]
 			}
 
 			ca := excelize.Cell{Value: safeCellValue(va)}
