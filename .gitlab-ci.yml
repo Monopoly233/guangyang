@@ -125,43 +125,22 @@ deploy_ack:
       # 1) 强制 compare 费用（分）
       kubectl -n gy set env deploy/go "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null || true
 
-      # 2) WeChatPay 运行时环境变量（只放“短文本”，不要塞多行 PEM）
-      # 必填通常至少包括：WECHAT_NOTIFY_URL / WECHAT_PAY_APPID / WECHAT_API_V3_KEY
-      # 说明：
-      # - WECHAT_MCHID 推荐提供（纯数字），但也可以不填：Go 会从 wechatpay/cert/<mchid>_YYYYMMDD_cert.zip 文件名推断
-      # 不管短文本是否齐全，都先清理历史遗留的坏平台公钥 env key，避免覆盖文件注入方案
-      kubectl -n gy patch secret wechatpay-env --type=json \
-        -p='[{"op":"remove","path":"/data/WECHAT_PLATFORM_PUBLIC_KEY"}]' >/dev/null 2>&1 || true
-      kubectl -n gy patch secret wechatpay-env --type=json \
-        -p='[{"op":"remove","path":"/data/WECHAT_PLATFORM_PUBLIC_KEY_PEM"}]' >/dev/null 2>&1 || true
-
-      if [ -n "${WECHAT_NOTIFY_URL:-}" ] && [ -n "${WECHAT_PAY_APPID:-}" ] && [ -n "${WECHAT_API_V3_KEY:-}" ]; then
-        kubectl -n gy delete secret wechatpay-env --ignore-not-found >/dev/null 2>&1 || true
-        # 校验商户号（可选）：必须是纯数字，不能用 1106xxxx 这种占位符
-        if [ -n "${WECHAT_MCHID:-}" ] && ! echo "$WECHAT_MCHID" | grep -Eq '^[1-9][0-9]*$'; then
-          echo "ERROR: WECHAT_MCHID 必须是纯数字的直连商户号（不能包含 x/空格）。你现在是：$WECHAT_MCHID" >&2
-          echo "提示：商户号不是密钥；不想配也可以留空，让程序从 <mchid>_YYYYMMDD_cert.zip 文件名推断。" >&2
-          exit 1
-        fi
-
-        args=(
-          --from-literal="WECHAT_NOTIFY_URL=$WECHAT_NOTIFY_URL"
-          --from-literal="WECHAT_PAY_APPID=$WECHAT_PAY_APPID"
-          --from-literal="WECHAT_APPID=${WECHAT_APPID:-}"
-          --from-literal="WECHAT_API_V3_KEY=$WECHAT_API_V3_KEY"
-          --from-literal="WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}"
-          --from-literal="WECHAT_MOCK=${WECHAT_MOCK:-0}"
-        )
-        if [ -n "${WECHAT_MCHID:-}" ]; then
-          args+=(--from-literal="WECHAT_MCHID=$WECHAT_MCHID")
-        fi
-
-        kubectl -n gy create secret generic wechatpay-env \
-          "${args[@]}" \
-          --dry-run=client -o yaml | kubectl apply -f -
-      else
-        echo "skip wechatpay-env: required vars missing (set WECHAT_NOTIFY_URL/WECHAT_PAY_APPID/WECHAT_API_V3_KEY)"
-      fi
+      # 2) WeChatPay 运行时环境变量（与 docker-compose.prod.yml 保持一致）
+      # 目标：任何在 GitLab Variables 中配置的下列变量，永远同步进 gy/wechatpay-env；
+      # 不做删改/解码/校验，只做“原样同步”（避免集群残留旧值覆盖你当前配置）。
+      kubectl -n gy delete secret wechatpay-env --ignore-not-found >/dev/null 2>&1 || true
+      kubectl -n gy create secret generic wechatpay-env \
+        --from-literal="WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}" \
+        --from-literal="WECHAT_MCHID=${WECHAT_MCHID:-}" \
+        --from-literal="WECHAT_APPID=${WECHAT_APPID:-}" \
+        --from-literal="WECHAT_PAY_APPID=${WECHAT_PAY_APPID:-}" \
+        --from-literal="WECHAT_CORP_ID=${WECHAT_CORP_ID:-}" \
+        --from-literal="WECHAT_API_V3_KEY=${WECHAT_API_V3_KEY:-}" \
+        --from-literal="WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}" \
+        --from-literal="WECHAT_PLATFORM_PUBLIC_KEY=${WECHAT_PLATFORM_PUBLIC_KEY:-}" \
+        --from-literal="WECHAT_MOCK=${WECHAT_MOCK:-}" \
+        --from-literal="WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}" \
+        --dry-run=client -o yaml | kubectl apply -f -
 
       # 3) WeChatPay 证书/密钥文件（全部用 GitLab File 变量塞文件）
       #
