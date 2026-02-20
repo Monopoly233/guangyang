@@ -61,7 +61,7 @@ curl -sS http://127.0.0.1:18080/healthz
 
 注意：
 - `k8s/40-albconfig-ingressclass.yaml` 中写死了 ALB 实例 ID：`alb-r8l72kghnnh97b0epj`（如你更换 ALB，需要同步修改）
-- 目前仅监听 80（HTTP）。你后续要走 Cloudflare Full(strict) + 443 时，再在 ALB 上配置 Origin 证书并把 Ingress 扩展到 443。
+- Ingress 已配置同时监听 80/443。你若使用 Cloudflare Full(strict)，请确保 ALB 已配置 443 监听与 Origin 证书。
 
 ### 注意（微信回调）
 
