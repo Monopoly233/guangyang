@@ -5,6 +5,12 @@ metadata:
   namespace: gy
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # 避免滚动更新时额外起 1 个 Pod，导致资源不够而 Pending/超时
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: python
@@ -41,8 +47,8 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              cpu: "1"
-              memory: 1Gi
+              cpu: 500m
+              memory: 512Mi
             limits:
               cpu: "2"
               memory: 3Gi
