@@ -47,6 +47,13 @@ spec:
               value: "compare-results"
             - name: OSS_SIGN_EXPIRE_SECONDS
               value: "600"
+            # RRSA（无 webhook 的手动注入方式）：让 SDK 通过 OIDC token 换取 STS 临时凭证
+            - name: ALIBABA_CLOUD_ROLE_ARN
+              value: "acs:ram::1930344476137822:role/go-sa"
+            - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+              value: "acs:ram::1930344476137822:oidc-provider/ack-rrsa-c6efbd36fb4cc413b91abbaa91f3ffa38"
+            - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+              value: "/var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token"
             # WeChatPay（真实支付测试时需要注入）
             - name: WECHAT_NOTIFY_URL
               valueFrom:
@@ -99,6 +106,9 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /app/tmp
+            - name: rrsa-oidc-token
+              mountPath: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens
+              readOnly: true
             - name: wechatpay-cert
               mountPath: /app/wechatpay/cert
               readOnly: true
@@ -124,6 +134,14 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: rrsa-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
         - name: wechatpay-cert
           secret:
             secretName: wechatpay-cert
