@@ -5,8 +5,6 @@ from typing import Optional
 import logging
 import sys
 import os
-import subprocess
-import traceback
 
 # 创建一个 FastAPI 实例
 app = FastAPI()
@@ -47,26 +45,6 @@ if not logger.handlers:
 
 from compare_api import compare_router
 from feeguest import feeguest_router
-
-
-def ensure_dependencies_installed():
-    """启动时根据 requirements.txt 安装依赖（无交互模式）。"""
-    try:
-        req_path = os.path.join(os.path.dirname(__file__), 'requirements.txt')
-        if not os.path.exists(req_path):
-            logger.warning("requirements.txt 未找到，跳过安装。")
-            return
-        logger.info("开始安装依赖（若已安装将被跳过）……")
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', req_path, '--quiet'], check=False)
-        logger.info("依赖检查完成。")
-    except Exception:
-        logger.warning(f"安装依赖时出现非致命错误：{traceback.format_exc()}")
-
-
-@app.on_event("startup")
-def _on_startup():
-    ensure_dependencies_installed()
-
 
 # 根路径测试
 @app.get("/")

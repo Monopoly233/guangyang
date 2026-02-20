@@ -16,4 +16,5 @@ COPY . .
 EXPOSE 8000
 ENV PORT=8000
 
-CMD ["bash", "-lc", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+ # Default 1 worker (safe under low CPU); override via UVICORN_WORKERS.
+ CMD ["bash", "-lc", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${UVICORN_WORKERS:-1}"]
