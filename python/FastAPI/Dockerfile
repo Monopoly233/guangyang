@@ -1,5 +1,5 @@
 # Python FastAPI Dockerfile
-FROM python:3.13-slim
+FROM registry.cn-hangzhou.aliyuncs.com/library/python:3.13-slim
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
