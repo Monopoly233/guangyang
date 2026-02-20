@@ -47,7 +47,12 @@ func (s *InMemoryCompareJobStore) Get(id string) (*domain.CompareJob, bool, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	j, ok := s.jobs[id]
-	return j, ok, nil
+	if !ok || j == nil {
+		return nil, false, nil
+	}
+	// Return a copy to avoid accidental mutation/data races outside the lock.
+	cp := *j
+	return &cp, true, nil
 }
 
 func (s *InMemoryCompareJobStore) Update(id string, fn func(j *domain.CompareJob)) (*domain.CompareJob, bool, error) {
@@ -58,7 +63,9 @@ func (s *InMemoryCompareJobStore) Update(id string, fn func(j *domain.CompareJob
 		return nil, false, nil
 	}
 	fn(j)
-	return j, true, nil
+	// Return a copy to avoid callers mutating shared state outside the lock.
+	cp := *j
+	return &cp, true, nil
 }
 
 type compareJobRecord struct {

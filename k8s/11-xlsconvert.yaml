@@ -1,54 +1,51 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: python
+  name: xlsconvert
   namespace: gy
 spec:
-  # Go 已内置 Excel 比对/导出（含 xls 转换），默认不再需要 python 服务
-  replicas: 0
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      # 避免滚动更新时额外起 1 个 Pod，导致资源不够而 Pending/超时
       maxSurge: 0
       maxUnavailable: 1
   selector:
     matchLabels:
-      app: python
+      app: xlsconvert
   template:
     metadata:
       labels:
-        app: python
+        app: xlsconvert
     spec:
       containers:
-        - name: python
-          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/python:latest
+        - name: xlsconvert
+          # 你需要把这个镜像 build/push 到你的 ACR
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/xlsconvert:latest
           imagePullPolicy: Always
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: 8090
           env:
             - name: PORT
-              value: "8000"
-            - name: CORS_ALLOW_ORIGINS
-              value: "*"
-            - name: UVICORN_WORKERS
-              value: "2"
+              value: "8090"
+            - name: TMP_ROOT
+              value: "/tmp"
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             initialDelaySeconds: 3
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
             requests:
-              cpu: 500m
+              cpu: 250m
               memory: 512Mi
             limits:
               cpu: "2"
@@ -57,13 +54,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: python
+  name: xlsconvert
   namespace: gy
 spec:
   selector:
-    app: python
+    app: xlsconvert
   ports:
     - name: http
-      port: 8000
+      port: 8090
       targetPort: http
 
