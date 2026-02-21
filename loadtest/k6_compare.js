@@ -24,13 +24,13 @@ function createJob(file1Bytes, file2Bytes) {
     file2: http.file(file2Bytes, "file2.xlsx"),
   };
   const res = http.post(`${BASE_URL}/compare/jobs`, form, { timeout: "300s" });
-  check(res, { "create job 200": (r) => r.status === 200 });
+  check(res, { "create job 200": function (r) { return r.status === 200; } });
   return res.json();
 }
 
 function getJob(jobId) {
   const res = http.get(`${BASE_URL}/compare/jobs/${encodeURIComponent(jobId)}`, { timeout: "30s" });
-  check(res, { "get job 200": (r) => r.status === 200 });
+  check(res, { "get job 200": function (r) { return r.status === 200; } });
   return res.json();
 }
 
@@ -40,11 +40,11 @@ function downloadExport(jobId) {
     headers: { Accept: "application/json" },
     timeout: "30s",
   });
-  check(meta, { "export meta 200": (r) => r.status === 200 });
+  check(meta, { "export meta 200": function (r) { return r.status === 200; } });
   const u = (meta.json("url") || "").trim();
   if (!u) return false;
   const res = http.get(u, { timeout: "300s" });
-  check(res, { "export download ok": (r) => r.status === 200 });
+  check(res, { "export download ok": function (r) { return r.status === 200; } });
   return true;
 }
 
@@ -60,17 +60,17 @@ export default function () {
   const f2 = open(FILE2, "b");
 
   const job = createJob(f1, f2);
-  const jobId = job&& job.jobId;
+  const jobId = job && job.jobId;
   if (!jobId) {
     sleep(1);
     return;
   }
 
   // Poll for up to 90s.
-  const deadline = Date.now() + 90_000;
+  const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
     const j = getJob(jobId);
-    const st = j&& j.status;
+    const st = j && j.status;
     if (st === "ready") {
       downloadExport(jobId);
       break;
