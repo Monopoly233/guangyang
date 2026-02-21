@@ -14,6 +14,7 @@ import (
 
 	"gobackend/compare"
 	"gobackend/ossstore"
+	"gobackend/redislock"
 	"gobackend/store"
 	"gobackend/streamq"
 )
@@ -59,18 +60,19 @@ func main() {
 	}
 
 	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
-	worker := compare.NewWorker(jobStore, tmpRoot, ossSt)
+	lock := redislock.New(rdb, readEnvDefault("COMPARE_JOB_LOCK_PREFIX", "gy:lock:comparejob:"))
+	worker := compare.NewWorker(jobStore, tmpRoot, ossSt, lock)
 
 	consumerName := strings.TrimSpace(os.Getenv("WORKER_CONSUMER_NAME"))
 	if consumerName == "" {
 		consumerName = strings.TrimSpace(os.Getenv("HOSTNAME"))
 	}
 	cons := streamq.NewConsumer(rdb, streamKey, group, consumerName)
-	log.Printf("go-worker start stream=%s group=%s consumer=%s", streamKey, group, consumerName)
+	log.Printf("compare-worker start stream=%s group=%s consumer=%s", streamKey, group, consumerName)
 
 	err = cons.ConsumeLoop(ctx, func(ctx context.Context, jobID string) error {
 		// handler should never crash the loop; all failures are persisted to job store.
-		return worker.Process(jobID)
+		return worker.Process(ctx, jobID)
 	})
 	if err != nil && err != context.Canceled {
 		log.Fatalf("consume loop exited: %v", err)
@@ -113,3 +115,4 @@ func signalContext() (context.Context, context.CancelFunc) {
 	}()
 	return ctx, cancel
 }
+

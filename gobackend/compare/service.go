@@ -149,7 +149,7 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OSS 未启用：无法在 worker 模式下处理上传", http.StatusServiceUnavailable)
 		return
 	}
-	// Upload inputs to OSS for go-worker
+	// Upload inputs to OSS for compare-worker
 	ctype1 := excelContentTypeByName(file1Name)
 	ctype2 := excelContentTypeByName(file2Name)
 	key1 := s.oss.ObjectKeyForInput(jobID, "file1", file1Name)
@@ -181,7 +181,7 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.Create(job)
 
-	// Enqueue background compare in Redis Streams (handled by go-worker)
+	// Enqueue background compare in Redis Streams (handled by compare-worker)
 	if s.queue != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()

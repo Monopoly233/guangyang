@@ -180,24 +180,24 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: go-worker
+  name: compare-worker
   namespace: gy
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: go-worker
+      app: compare-worker
   template:
     metadata:
       labels:
-        app: go-worker
+        app: compare-worker
     spec:
       serviceAccountName: go-sa
       containers:
-        - name: go-worker
+        - name: compare-worker
           image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
           imagePullPolicy: Always
-          command: ["/app/go-worker"]
+          command: ["/app/compare-worker"]
           env:
             - name: TMP_ROOT
               value: "/app/tmp"

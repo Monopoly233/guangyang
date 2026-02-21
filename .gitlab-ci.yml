@@ -110,20 +110,22 @@ deploy_ack:
     - |
       # Python 服务已移除：apply 不会自动删除旧资源，这里显式清理残留（如存在）。
       kubectl -n gy delete deploy/python svc/python --ignore-not-found >/dev/null 2>&1 || true
+      # compare-worker 重命名：清理旧的 go-worker（如存在）。
+      kubectl -n gy delete deploy/go-worker --ignore-not-found >/dev/null 2>&1 || true
     - echo "======== (post) 固定使用本次镜像 TAG ========"
     - |
       # 避免依赖 latest 造成“拉到旧镜像/缓存镜像”导致行为不一致
       test -n "${IMAGE_TAG:-}"
       ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
-      kubectl -n gy set image deploy/go-worker go-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true
+      kubectl -n gy set image deploy/compare-worker compare-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true
       kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
 
     - echo "======== (post) 注入计费/微信支付配置（来自 GitLab Variables） ========"
     - |
       # 1) 强制 compare 费用（分）
       kubectl -n gy set env deploy/go "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null || true
-      kubectl -n gy set env deploy/go-worker "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null 2>&1 || true
+      kubectl -n gy set env deploy/compare-worker "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null 2>&1 || true
 
       # 2) WeChatPay 运行时环境变量（与 docker-compose.prod.yml 保持一致）
       # 目标：任何在 GitLab Variables 中配置的下列变量，永远同步进 gy/wechatpay-env；
@@ -288,10 +290,10 @@ deploy_ack:
 
       # Secret 更新不会热加载到容器环境变量，显式滚动一次确保生效
       kubectl -n gy rollout restart deploy/go >/dev/null || true
-      kubectl -n gy rollout restart deploy/go-worker >/dev/null 2>&1 || true
+      kubectl -n gy rollout restart deploy/compare-worker >/dev/null 2>&1 || true
 
       kubectl -n gy rollout status deploy/go --timeout=180s
-      kubectl -n gy rollout status deploy/go-worker --timeout=180s >/dev/null 2>&1 || true
+      kubectl -n gy rollout status deploy/compare-worker --timeout=180s >/dev/null 2>&1 || true
       kubectl -n gy rollout status deploy/web --timeout=180s
     - kubectl -n gy get deploy,svc,pod
     - |
