@@ -11,6 +11,34 @@ spec:
         app: k6-compare
     spec:
       restartPolicy: Never
+      initContainers:
+        - name: fetch-files
+          image: curlimages/curl:8.12.1
+          imagePullPolicy: IfNotPresent
+          env:
+            # 需要你提供可下载的 URL（推荐 OSS 签名 URL，expire 设久一点）
+            - name: FILE1_URL
+              value: "https://guangyangoss.oss-cn-heyuan.aliyuncs.com/01.xlsx?Expires=1771649210&OSSAccessKeyId=TMP.3KpHJEVmWXiroXNKJLXqyDNuD4KYWc9jQR1GbGLAYTsiynfwiGqZMsmfFHmQhXiCTypJNjG3QdBXReVHoSRkyzTbunA7uq&Signature=ojfU9b%2FzDFkpOG1ZcILXVlgzOBw%3D"
+            - name: FILE2_URL
+              value: "https://guangyangoss.oss-cn-heyuan.aliyuncs.com/02.xlsx?Expires=1771649232&OSSAccessKeyId=TMP.3KpHJEVmWXiroXNKJLXqyDNuD4KYWc9jQR1GbGLAYTsiynfwiGqZMsmfFHmQhXiCTypJNjG3QdBXReVHoSRkyzTbunA7uq&Signature=tmg2hznhjw1xCStsSskS0lR%2B0wk%3D"
+          command:
+            - sh
+            - -lc
+            - |
+              set -euo pipefail
+              if [ -z "${FILE1_URL:-}" ] || [ -z "${FILE2_URL:-}" ]; then
+                echo "ERROR: missing FILE1_URL/FILE2_URL" >&2
+                exit 1
+              fi
+              mkdir -p /data
+              echo "Downloading file1..."
+              curl -fsSL "$FILE1_URL" -o /data/01.xlsx
+              echo "Downloading file2..."
+              curl -fsSL "$FILE2_URL" -o /data/02.xlsx
+              ls -lh /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: k6
           image: grafana/k6:0.51.0
@@ -36,7 +64,6 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
-              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -49,8 +76,6 @@ spec:
         - name: script
           configMap:
             name: k6-script
-        # 由你从 repo 的 loadtest/01.xlsx & loadtest/02.xlsx 创建 Secret：k6-files
         - name: data
-          secret:
-            secretName: k6-files
+          emptyDir: {}
 
