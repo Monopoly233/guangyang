@@ -20,6 +20,9 @@ type CompareJob struct {
 	// Inputs (saved on disk)
 	File1Path string `json:"-"`
 	File2Path string `json:"-"`
+	// Inputs (saved on OSS; required for go-worker to fetch)
+	File1OSSKey string `json:"-"`
+	File2OSSKey string `json:"-"`
 	// Original upload filenames (for export sheet names / headers)
 	File1Name string `json:"-"`
 	File2Name string `json:"-"`

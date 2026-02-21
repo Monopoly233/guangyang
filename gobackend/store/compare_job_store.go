@@ -73,11 +73,13 @@ type compareJobRecord struct {
 	Status    domain.CompareJobStatus `json:"status"`
 	CreatedAt time.Time               `json:"createdAt"`
 
-	File1Path  string `json:"file1Path"`
-	File2Path  string `json:"file2Path"`
-	File1Name string `json:"file1Name"`
-	File2Name string `json:"file2Name"`
-	ResultPath string `json:"resultPath"`
+	File1Path    string `json:"file1Path"`
+	File2Path    string `json:"file2Path"`
+	File1OSSKey  string `json:"file1OssKey"`
+	File2OSSKey  string `json:"file2OssKey"`
+	File1Name    string `json:"file1Name"`
+	File2Name    string `json:"file2Name"`
+	ResultPath   string `json:"resultPath"`
 	ResultOSSKey string `json:"resultOssKey"`
 
 	AmountYuan  float64    `json:"amountYuan"`
@@ -94,41 +96,45 @@ func recordFromJob(j *domain.CompareJob) compareJobRecord {
 		return compareJobRecord{}
 	}
 	return compareJobRecord{
-		ID:          j.ID,
-		Status:      j.Status,
-		CreatedAt:   j.CreatedAt,
-		File1Path:   j.File1Path,
-		File2Path:   j.File2Path,
-		File1Name:   j.File1Name,
-		File2Name:   j.File2Name,
-		ResultPath:  j.ResultPath,
+		ID:           j.ID,
+		Status:       j.Status,
+		CreatedAt:    j.CreatedAt,
+		File1Path:    j.File1Path,
+		File2Path:    j.File2Path,
+		File1OSSKey:  j.File1OSSKey,
+		File2OSSKey:  j.File2OSSKey,
+		File1Name:    j.File1Name,
+		File2Name:    j.File2Name,
+		ResultPath:   j.ResultPath,
 		ResultOSSKey: j.ResultOSSKey,
-		AmountYuan:  j.AmountYuan,
-		CodeURL:     j.CodeURL,
-		Paid:        j.Paid,
-		PaidAt:      j.PaidAt,
-		CancelledAt: j.CancelledAt,
-		Error:       j.Error,
+		AmountYuan:   j.AmountYuan,
+		CodeURL:      j.CodeURL,
+		Paid:         j.Paid,
+		PaidAt:       j.PaidAt,
+		CancelledAt:  j.CancelledAt,
+		Error:        j.Error,
 	}
 }
 
 func jobFromRecord(r compareJobRecord) *domain.CompareJob {
 	return &domain.CompareJob{
-		ID:          r.ID,
-		Status:      r.Status,
-		CreatedAt:   r.CreatedAt,
-		File1Path:   r.File1Path,
-		File2Path:   r.File2Path,
-		File1Name:   r.File1Name,
-		File2Name:   r.File2Name,
-		ResultPath:  r.ResultPath,
+		ID:           r.ID,
+		Status:       r.Status,
+		CreatedAt:    r.CreatedAt,
+		File1Path:    r.File1Path,
+		File2Path:    r.File2Path,
+		File1OSSKey:  r.File1OSSKey,
+		File2OSSKey:  r.File2OSSKey,
+		File1Name:    r.File1Name,
+		File2Name:    r.File2Name,
+		ResultPath:   r.ResultPath,
 		ResultOSSKey: r.ResultOSSKey,
-		AmountYuan:  r.AmountYuan,
-		CodeURL:     r.CodeURL,
-		Paid:        r.Paid,
-		PaidAt:      r.PaidAt,
-		CancelledAt: r.CancelledAt,
-		Error:       r.Error,
+		AmountYuan:   r.AmountYuan,
+		CodeURL:      r.CodeURL,
+		Paid:         r.Paid,
+		PaidAt:       r.PaidAt,
+		CancelledAt:  r.CancelledAt,
+		Error:        r.Error,
 	}
 }
 

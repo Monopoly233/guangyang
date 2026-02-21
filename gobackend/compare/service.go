@@ -20,20 +20,20 @@ import (
 	"gobackend/domain"
 	"gobackend/excelcmp"
 	"gobackend/ossstore"
-	"gobackend/queue"
 	"gobackend/store"
+	"gobackend/streamq"
 	"gobackend/wechat"
 )
 
 type Service struct {
 	store    store.CompareJobStore
-	queue    *queue.InMemoryQueue
+	queue    streamq.CompareQueue
 	tmpRoot  string
 	inflight chan struct{}
 	oss      *ossstore.Store
 }
 
-func NewService(st store.CompareJobStore, q *queue.InMemoryQueue, tmpRoot string, oss *ossstore.Store) *Service {
+func NewService(st store.CompareJobStore, q streamq.CompareQueue, tmpRoot string, oss *ossstore.Store) *Service {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
@@ -145,23 +145,54 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.oss == nil || !s.oss.Enabled() {
+		http.Error(w, "OSS 未启用：无法在 worker 模式下处理上传", http.StatusServiceUnavailable)
+		return
+	}
+	// Upload inputs to OSS for go-worker
+	ctype1 := excelContentTypeByName(file1Name)
+	ctype2 := excelContentTypeByName(file2Name)
+	key1 := s.oss.ObjectKeyForInput(jobID, "file1", file1Name)
+	key2 := s.oss.ObjectKeyForInput(jobID, "file2", file2Name)
+	if err := s.oss.PutFileFromPath(key1, file1Path, ctype1); err != nil {
+		http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if err := s.oss.PutFileFromPath(key2, file2Path, ctype2); err != nil {
+		http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	// Best-effort cleanup: local inputs are no longer needed.
+	_ = os.Remove(file1Path)
+	_ = os.Remove(file2Path)
+	_ = os.RemoveAll(jobDir)
+
 	job := &domain.CompareJob{
-		ID:        jobID,
-		Status:    domain.CompareJobStatusProcessing,
-		CreatedAt: time.Now(),
-		File1Path: file1Path,
-		File2Path: file2Path,
-		File1Name: file1Name,
-		File2Name: file2Name,
-		Paid:      false,
+		ID:          jobID,
+		Status:      domain.CompareJobStatusProcessing,
+		CreatedAt:   time.Now(),
+		File1Path:   "",
+		File2Path:   "",
+		File1OSSKey: key1,
+		File2OSSKey: key2,
+		File1Name:   file1Name,
+		File2Name:   file2Name,
+		Paid:        false,
 	}
 	_ = s.store.Create(job)
 
-	// Enqueue background compare (actual implementation in worker)
+	// Enqueue background compare in Redis Streams (handled by go-worker)
 	if s.queue != nil {
-		s.queue.Enqueue(func() {
-			s.runCompareTask(jobID)
-		})
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.queue.Enqueue(ctx, jobID); err != nil {
+			_, _, _ = s.store.Update(jobID, func(j *domain.CompareJob) {
+				j.Status = domain.CompareJobStatusFailed
+				j.Error = "投递任务失败: " + err.Error()
+			})
+			http.Error(w, "投递任务失败", http.StatusBadGateway)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -627,6 +658,18 @@ func safeBaseNameFromName(name string) string {
 		return "upload.xlsx"
 	}
 	return filepath.Base(name)
+}
+
+func excelContentTypeByName(name string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	switch ext {
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx", ".xlsm", ".xltx", ".xltm":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func readEnvIntDefault(key string, defaultVal int) int {

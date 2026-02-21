@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +24,9 @@ type Store struct {
 
 	cred credentials.Credential
 
-	prefix     string
-	signExpiry time.Duration
+	prefix      string
+	inputPrefix string
+	signExpiry  time.Duration
 }
 
 func NewFromEnv() (*Store, bool, error) {
@@ -57,6 +59,12 @@ func NewFromEnv() (*Store, bool, error) {
 	prefix = strings.Trim(prefix, "/")
 	if prefix == "" {
 		prefix = "compare-results"
+	}
+
+	inputPrefix := strings.TrimSpace(os.Getenv("OSS_INPUT_PREFIX"))
+	inputPrefix = strings.Trim(inputPrefix, "/")
+	if inputPrefix == "" {
+		inputPrefix = "compare-inputs"
 	}
 
 	expirySec := readEnvInt64Default("OSS_SIGN_EXPIRE_SECONDS", 600)
@@ -99,6 +107,7 @@ func NewFromEnv() (*Store, bool, error) {
 		signBucket:   sb,
 		cred:         cred,
 		prefix:       prefix,
+		inputPrefix:  inputPrefix,
 		signExpiry:   time.Duration(expirySec) * time.Second,
 	}, true, nil
 }
@@ -167,12 +176,75 @@ func (s *Store) ObjectKeyForJob(jobID string) string {
 	return path.Join(s.prefix, jobID, "compare.xlsx")
 }
 
+func (s *Store) ObjectKeyForInput(jobID, which, originalName string) string {
+	jobID = strings.TrimSpace(jobID)
+	which = strings.TrimSpace(which)
+	if which == "" {
+		which = "file"
+	}
+	name := strings.TrimSpace(originalName)
+	if name == "" {
+		name = "upload"
+	}
+	// prevent path traversal in object key
+	name = path.Base(strings.ReplaceAll(name, "\\", "/"))
+	return path.Join(s.inputPrefix, jobID, which+"_"+name)
+}
+
 func (s *Store) ensureCred() error {
 	if s == nil || s.cred == nil {
 		return errors.New("阿里云凭证未初始化（RRSA/AK/STS 都不可用）")
 	}
 	// 这里主动触发一次刷新/校验，避免 OSS SDK 以“空 AK/SK”匿名请求打到 OSS，导致误导性的 bucket acl 403。
 	return validateAlibabaCredential(s.cred)
+}
+
+func (s *Store) PutFileFromPath(objectKey, localPath, contentType string) error {
+	if !s.Enabled() {
+		return errors.New("oss not enabled")
+	}
+	if err := s.ensureCred(); err != nil {
+		return err
+	}
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	localPath = strings.TrimSpace(localPath)
+	if objectKey == "" || localPath == "" {
+		return errors.New("invalid objectKey/localPath")
+	}
+	opts := []oss.Option{}
+	if strings.TrimSpace(contentType) != "" {
+		opts = append(opts, oss.ContentType(strings.TrimSpace(contentType)))
+	}
+	return s.uploadBucket.PutObjectFromFile(objectKey, localPath, opts...)
+}
+
+func (s *Store) GetObjectToFile(objectKey, localPath string) error {
+	if !s.Enabled() {
+		return errors.New("oss not enabled")
+	}
+	if err := s.ensureCred(); err != nil {
+		return err
+	}
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	localPath = strings.TrimSpace(localPath)
+	if objectKey == "" || localPath == "" {
+		return errors.New("invalid objectKey/localPath")
+	}
+	rc, err := s.uploadBucket.GetObject(objectKey)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, rc)
+	return err
 }
 
 func (s *Store) PutResultFile(objectKey, localPath string) error {

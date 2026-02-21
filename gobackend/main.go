@@ -17,9 +17,11 @@ import (
 
 	"gobackend/compare"
 	"gobackend/ossstore"
-	"gobackend/queue"
 	"gobackend/store"
+	"gobackend/streamq"
 	"gobackend/wechat"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // BillingEvent 代表一次计费事件或扣费占位
@@ -121,18 +123,19 @@ func main() {
 
 	// Compare jobs (pay-gated export)
 	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
-	qBuf := readEnvIntDefault("COMPARE_QUEUE_BUFFER", 256)
-	qWorkers := readEnvIntDefault("COMPARE_QUEUE_WORKERS", 2)
-	q := queue.NewInMemoryQueue(qBuf)
-	q.Start(qWorkers)
-	var jobStore store.CompareJobStore = store.NewInMemoryCompareJobStore()
-	if redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR")); redisAddr != "" {
-		rs, err := store.NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
-		if err != nil {
-			log.Fatalf("init redis store failed: %v", err)
-		}
-		jobStore = rs
+	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	if redisAddr == "" {
+		log.Fatalf("REDIS_ADDR 为空：Streams 队列模式必须启用 Redis")
 	}
+	jobStore, err := store.NewRedisCompareJobStore(redisAddr, os.Getenv("REDIS_PASSWORD"))
+	if err != nil {
+		log.Fatalf("init redis store failed: %v", err)
+	}
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: strings.TrimSpace(os.Getenv("REDIS_PASSWORD")),
+		DB:       readEnvIntDefault("REDIS_DB", 0),
+	})
 
 	var ossSt *ossstore.Store
 	if st, enabled, err := ossstore.NewFromEnv(); err != nil {
@@ -144,9 +147,14 @@ func main() {
 		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
 	}
 
+	streamKey := readEnvDefault("COMPARE_STREAM_KEY", "gy:comparejobs:stream")
+	group := readEnvDefault("COMPARE_STREAM_GROUP", "gy-compare")
+	maxLen := int64(readEnvIntDefault("COMPARE_STREAM_MAXLEN", 100000))
+	q := streamq.NewRedisStreamQueue(rdb, streamKey, group, maxLen)
+
 	compareSvc := compare.NewService(jobStore, q, tmpRoot, ossSt)
 	compareSvc.RegisterRoutes(mux)
-	wechat.RegisterNotifyRoutes(mux, jobStore, q)
+	wechat.RegisterNotifyRoutes(mux, jobStore)
 
 	addr := ":" + readEnvDefault("PORT", "8080")
 	log.Printf("Go billing stub listening on %s", addr)

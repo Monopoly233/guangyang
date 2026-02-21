@@ -13,7 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o /out/app .
+RUN go build -o /out/go-api . && \
+    go build -o /out/go-worker ./cmd/go-worker
 
 FROM alpine:3.20
 WORKDIR /app
@@ -28,10 +29,11 @@ RUN apk add --no-cache ca-certificates python3 py3-pip && \
     /opt/unoserver-client/bin/pip install --no-cache-dir "unoserver==3.4"
 ENV PATH="/opt/unoserver-client/bin:${PATH}"
 
-COPY --from=build /out/app /app/app
+COPY --from=build /out/go-api /app/go-api
+COPY --from=build /out/go-worker /app/go-worker
 
 EXPOSE 8080
 ENV PORT=8080
 
-CMD ["/app/app"]
+CMD ["/app/go-api"]
 

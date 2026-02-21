@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"gobackend/domain"
-	"gobackend/queue"
 	"gobackend/store"
 )
 
@@ -33,8 +32,8 @@ type wechatpayTransaction struct {
 	} `json:"amount"`
 }
 
-func RegisterNotifyRoutes(mux *http.ServeMux, st store.CompareJobStore, q *queue.InMemoryQueue) {
-	h := &notifyHandler{store: st, queue: q}
+func RegisterNotifyRoutes(mux *http.ServeMux, st store.CompareJobStore) {
+	h := &notifyHandler{store: st}
 	mux.HandleFunc("/wechatpay/notify", h.handle)
 	// 兼容末尾多一个 "/" 的 notify_url（Go 的 ServeMux 对不带 "/" 结尾的 pattern 是精确匹配）
 	mux.HandleFunc("/wechatpay/notify/", h.handle)
@@ -42,7 +41,6 @@ func RegisterNotifyRoutes(mux *http.ServeMux, st store.CompareJobStore, q *queue
 
 type notifyHandler struct {
 	store store.CompareJobStore
-	queue *queue.InMemoryQueue
 }
 
 func (h *notifyHandler) handle(w http.ResponseWriter, r *http.Request) {
@@ -154,12 +152,7 @@ func (h *notifyHandler) handle(w http.ResponseWriter, r *http.Request) {
 			_ = j
 		}
 	}
-
-	if h.queue != nil {
-		h.queue.Enqueue(update)
-	} else {
-		update()
-	}
+	update()
 
 	writeJSON(w, http.StatusOK, map[string]string{"code": "SUCCESS", "message": "OK"})
 }
