@@ -1,0 +1,174 @@
+.compare-container {
+  padding: 16px;
+}
+
+.compare-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compare-actions button {
+  padding: 6px 12px;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.compare-actions button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.preview-wrapper {
+  margin-top: 16px;
+}
+
+.preview-sheet {
+  margin-bottom: 20px;
+}
+
+.preview-sheet h4 {
+  margin: 0 0 8px 0;
+}
+
+/* 细化由 SheetJS 生成的表格样式 */
+.preview-sheet table {
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.preview-sheet table, .preview-sheet th, .preview-sheet td {
+  border: 1px solid #e5e7eb;
+}
+
+.preview-sheet th, .preview-sheet td {
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.info-box {
+  margin-top: 12px;
+  padding: 8px;
+  background: #f8fbff;
+  border: 1px solid #e0ecff;
+}
+
+.error-box {
+  color: red;
+  margin-top: 8px;
+}
+
+.pay-modal__mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 999;
+}
+
+.pay-modal {
+  width: min(720px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
+  padding: 16px;
+}
+
+.pay-modal__title {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+
+.pay-modal__desc {
+  color: #475569;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.pay-modal__content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+  justify-items: center;
+}
+
+.pay-modal__qrPane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pay-modal__qr {
+  width: 240px;
+  height: 240px;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  padding: 10px;
+}
+
+.pay-modal__qrPlaceholder {
+  width: 240px;
+  height: 240px;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  color: #64748b;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.pay-modal__codePane {
+  min-width: 0;
+}
+
+.pay-modal__codeLabel {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.pay-modal__codeValue {
+  margin: 0;
+  padding: 10px 12px;
+  background: #0b1020;
+  color: #e2e8f0;
+  border-radius: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pay-modal__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  justify-content: center;
+}
+
+@media (max-width: 640px) {
+  .pay-modal__content {
+    grid-template-columns: 1fr;
+  }
+  .pay-modal__qr,
+  .pay-modal__qrPlaceholder {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+  }
+}
+

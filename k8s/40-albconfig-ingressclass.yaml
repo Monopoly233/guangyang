@@ -1,0 +1,38 @@
+apiVersion: alibabacloud.com/v1
+kind: AlbConfig
+metadata:
+  # AlbConfig 通常放在 kube-system（ACK 控制面组件便于统一管理）
+  name: gy-alb
+  namespace: kube-system
+spec:
+  config:
+    # 复用你在 ALB 控制台创建的实例（必须是 Standard/WAF 版；Basic 版不可复用）
+    # 你的实例 ID（截图里）：alb-r8l72kghnnh97b0epj
+    id: alb-r8l72kghnnh97b0epj
+    # 复用模式下，如果你已经在控制台手工创建了同端口/同协议的监听（如 443/HTTPS），
+    # 需要开启 forceOverride 才能让控制器接管并覆盖/对齐监听配置，否则会 FailedApplyModel。
+    forceOverride: true
+    listenerForceOverride: true
+  listeners:
+    - port: 80
+      protocol: HTTP
+    - port: 443
+      protocol: HTTPS
+      certificates:
+        # 证书 ID（CertIdentifier）。你在 ALB 监听里选择的证书显示为：
+        # 23565798-cn-hangzhou | cloudflare2guangyang
+        - CertificateId: 23565798-cn-hangzhou
+          IsDefault: true
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  # 这个名字会出现在 ACK 控制台的 Ingress Class 下拉框里
+  name: gy-alb
+spec:
+  controller: ingress.k8s.alibabacloud/alb
+  parameters:
+    apiGroup: alibabacloud.com
+    kind: AlbConfig
+    name: gy-alb
+

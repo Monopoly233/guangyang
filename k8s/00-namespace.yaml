@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gy
+  labels:
+    # ACK RRSA 自动注入需要（依赖 ack-pod-identity-webhook）
+    pod-identity.alibabacloud.com/injection: "on"
+

@@ -1,0 +1,487 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go
+  template:
+    metadata:
+      labels:
+        app: go
+    spec:
+      serviceAccountName: go-sa
+      containers:
+        - name: go
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            # Example: OTLP endpoint for tracing (otel-collector). Leave empty to disable.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: PORT
+              value: "8080"
+            - name: CORS_ALLOW_ORIGIN
+              value: "*"
+            # Redis Streams queue
+            - name: COMPARE_STREAM_KEY
+              value: "gy:comparejobs:stream"
+            - name: COMPARE_STREAM_GROUP
+              value: "gy-compare"
+            - name: COMPARE_STREAM_MAXLEN
+              value: "100000"
+            - name: COMPARE_JOB_FEE_FEN
+              value: "1"
+            - name: TMP_ROOT
+              value: "/app/tmp"
+            - name: REDIS_ADDR
+              value: "10.0.40.253:6379"
+            # xlsconvert（unoserver）：仅当上传是 .xls 时会先转成 .xlsx
+            - name: XLSCONVERT_HOST
+              value: "xlsconvert"
+            - name: XLSCONVERT_PORT
+              value: "2003"
+            - name: XLSCONVERT_PROTOCOL
+              value: "http"
+            - name: XLSCONVERT_TIMEOUT_SECONDS
+              value: "90"
+            # OSS：对比结果上传 + export 走签名下载链接（RRSA 自动拿临时凭证）
+            - name: OSS_BUCKET
+              value: "guangyangoss"
+            - name: OSS_REGION
+              value: "cn-heyuan"
+            - name: OSS_ENDPOINT_INTERNAL
+              value: "https://oss-cn-heyuan-internal.aliyuncs.com"
+            - name: OSS_ENDPOINT_PUBLIC
+              value: "https://oss-cn-heyuan.aliyuncs.com"
+            - name: OSS_PREFIX
+              value: "compare-results"
+            - name: OSS_INPUT_PREFIX
+              value: "compare-inputs"
+            - name: OSS_SIGN_EXPIRE_SECONDS
+              value: "600"
+            # RRSA（无 webhook 的手动注入方式）：让 SDK 通过 OIDC token 换取 STS 临时凭证
+            - name: ALIBABA_CLOUD_ROLE_ARN
+              value: "acs:ram::1930344476137822:role/go-sa"
+            - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+              value: "acs:ram::1930344476137822:oidc-provider/ack-rrsa-c6efbd36fb4cc413b91abbaa91f3ffa38"
+            - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+              value: "/var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token"
+            # WeChatPay（真实支付测试时需要注入）
+            - name: WECHAT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_NOTIFY_URL
+                  optional: true
+            - name: WECHAT_MCHID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MCHID
+                  optional: true
+            - name: WECHAT_PAY_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PAY_APPID
+                  optional: true
+            - name: WECHAT_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_APPID
+                  optional: true
+            - name: WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_API_V3_KEY
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY_ID
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY
+                  optional: true
+            - name: WECHAT_MOCK
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MOCK
+                  optional: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /app/tmp
+            - name: rrsa-oidc-token
+              mountPath: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens
+              readOnly: true
+            - name: wechatpay-cert
+              mountPath: /app/wechatpay/cert
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: rrsa-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
+        - name: wechatpay-cert
+          secret:
+            secretName: wechatpay-cert
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go
+  namespace: gy
+spec:
+  selector:
+    app: go
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compare-worker
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compare-worker
+  template:
+    metadata:
+      labels:
+        app: compare-worker
+    spec:
+      serviceAccountName: go-sa
+      containers:
+        - name: compare-worker
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          imagePullPolicy: Always
+          command: ["/app/compare-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: METRICS_ADDR
+              value: ":9090"
+            - name: STREAM_CONCURRENCY
+              value: "4"
+            - name: TMP_ROOT
+              value: "/app/tmp"
+            - name: REDIS_ADDR
+              value: "10.0.40.253:6379"
+            # Redis Streams queue
+            - name: COMPARE_STREAM_KEY
+              value: "gy:comparejobs:stream"
+            - name: COMPARE_STREAM_GROUP
+              value: "gy-compare"
+            - name: COMPARE_STREAM_MAXLEN
+              value: "100000"
+            # Pay-gate stream (compare-worker enqueue; payment-worker consumes)
+            - name: COMPARE_PAYGATE_STREAM_KEY
+              value: "gy:comparejobs:paygate"
+            - name: COMPARE_PAYGATE_STREAM_GROUP
+              value: "gy-paygate"
+            - name: COMPARE_PAYGATE_STREAM_MAXLEN
+              value: "100000"
+            - name: COMPARE_JOB_FEE_FEN
+              value: "1"
+            # xlsconvert（unoserver）：仅当上传是 .xls 时会先转成 .xlsx
+            - name: XLSCONVERT_HOST
+              value: "xlsconvert"
+            - name: XLSCONVERT_PORT
+              value: "2003"
+            - name: XLSCONVERT_PROTOCOL
+              value: "http"
+            - name: XLSCONVERT_TIMEOUT_SECONDS
+              value: "90"
+            # OSS：输入/结果都在 OSS
+            - name: OSS_BUCKET
+              value: "guangyangoss"
+            - name: OSS_REGION
+              value: "cn-heyuan"
+            - name: OSS_ENDPOINT_INTERNAL
+              value: "https://oss-cn-heyuan-internal.aliyuncs.com"
+            - name: OSS_ENDPOINT_PUBLIC
+              value: "https://oss-cn-heyuan.aliyuncs.com"
+            - name: OSS_PREFIX
+              value: "compare-results"
+            - name: OSS_INPUT_PREFIX
+              value: "compare-inputs"
+            - name: OSS_SIGN_EXPIRE_SECONDS
+              value: "600"
+            # RRSA（无 webhook 的手动注入方式）
+            - name: ALIBABA_CLOUD_ROLE_ARN
+              value: "acs:ram::1930344476137822:role/go-sa"
+            - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+              value: "acs:ram::1930344476137822:oidc-provider/ack-rrsa-c6efbd36fb4cc413b91abbaa91f3ffa38"
+            - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+              value: "/var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token"
+            # WeChatPay（worker 也需要下单）
+            - name: WECHAT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_NOTIFY_URL
+                  optional: true
+            - name: WECHAT_MCHID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MCHID
+                  optional: true
+            - name: WECHAT_PAY_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PAY_APPID
+                  optional: true
+            - name: WECHAT_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_APPID
+                  optional: true
+            - name: WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_API_V3_KEY
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY_ID
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY
+                  optional: true
+            - name: WECHAT_MOCK
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MOCK
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /app/tmp
+            - name: rrsa-oidc-token
+              mountPath: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens
+              readOnly: true
+            - name: wechatpay-cert
+              mountPath: /app/wechatpay/cert
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: rrsa-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
+        - name: wechatpay-cert
+          secret:
+            secretName: wechatpay-cert
+            optional: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-worker
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-worker
+  template:
+    metadata:
+      labels:
+        app: payment-worker
+    spec:
+      serviceAccountName: go-sa
+      containers:
+        - name: payment-worker
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          imagePullPolicy: Always
+          command: ["/app/payment-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: METRICS_ADDR
+              value: ":9090"
+            - name: STREAM_CONCURRENCY
+              value: "8"
+            - name: REDIS_ADDR
+              value: "10.0.40.253:6379"
+            # Pay-gate stream
+            - name: COMPARE_PAYGATE_STREAM_KEY
+              value: "gy:comparejobs:paygate"
+            - name: COMPARE_PAYGATE_STREAM_GROUP
+              value: "gy-paygate"
+            - name: COMPARE_PAYGATE_STREAM_MAXLEN
+              value: "100000"
+            - name: COMPARE_JOB_FEE_FEN
+              value: "1"
+            # WeChatPay（payment-worker 需要下单）
+            - name: WECHAT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_NOTIFY_URL
+                  optional: true
+            - name: WECHAT_MCHID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MCHID
+                  optional: true
+            - name: WECHAT_PAY_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PAY_APPID
+                  optional: true
+            - name: WECHAT_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_APPID
+                  optional: true
+            - name: WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_API_V3_KEY
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY_ID
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY
+                  optional: true
+            - name: WECHAT_MOCK
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MOCK
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: wechatpay-cert
+              mountPath: /app/wechatpay/cert
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+      volumes:
+        - name: wechatpay-cert
+          secret:
+            secretName: wechatpay-cert
+            optional: true
+

@@ -1,0 +1,17 @@
+.api-card-container {
+  padding: 16px;
+}
+
+.api-card-container__title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: #111827;
+}
+
+.api-card-container__grid {
+  display: grid;
+  gap: 14px;
+}
+
+

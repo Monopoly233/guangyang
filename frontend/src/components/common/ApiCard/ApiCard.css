@@ -1,0 +1,49 @@
+.api-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: box-shadow .2s ease, transform .1s ease, border-color .2s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.api-card:hover {
+  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+  transform: translateY(-2px);
+  border-color: #d1d5db;
+}
+
+.api-card__icon {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #111827;
+  font-weight: 600;
+}
+
+.api-card__body {
+  display: flex;
+  flex-direction: column;
+}
+
+.api-card__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.api-card__desc {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+

@@ -1,0 +1,45 @@
+services:
+  web:
+    image: ${CI_REGISTRY_IMAGE:-gy}/web:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8088:80"
+    depends_on:
+      - go
+    networks:
+      - appnet
+
+  go:
+    image: ${CI_REGISTRY_IMAGE:-gy}/go:${IMAGE_TAG:-latest}
+    build:
+      context: ./gobackend
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - CORS_ALLOW_ORIGIN=*
+      # WeChatPay config (建议用 .env / env.prod 或 CI 变量注入；不要写死在这里)
+      - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
+      - WECHAT_MCHID=${WECHAT_MCHID:-}
+      - WECHAT_APPID=${WECHAT_APPID:-}
+      - WECHAT_PAY_APPID=${WECHAT_PAY_APPID:-}
+      - WECHAT_CORP_ID=${WECHAT_CORP_ID:-}
+      - WECHAT_API_V3_KEY=${WECHAT_API_V3_KEY:-}
+      - WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}
+      - WECHAT_PLATFORM_PUBLIC_KEY=${WECHAT_PLATFORM_PUBLIC_KEY:-}
+      - WECHAT_MOCK=${WECHAT_MOCK:-}
+      - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
+    volumes:
+      # 证书/密钥目录建议通过挂载或 secrets 注入
+      - /opt/app/gy/wechatpay/cert:/app/wechatpay/cert:ro
+      - /opt/app/gy/tmp:/app/tmp
+    expose:
+      - "8080"
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
+

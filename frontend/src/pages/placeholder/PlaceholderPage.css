@@ -1,0 +1,22 @@
+.placeholder-page {
+  min-height: 100vh;
+  background: #f8fafc;
+}
+
+.placeholder-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 84px 16px 32px; /* 顶部给 Header 预留空间 */
+}
+
+.placeholder-desc {
+  margin: 8px 0 14px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.placeholder-actions {
+  display: flex;
+  gap: 10px;
+}
+

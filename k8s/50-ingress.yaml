@@ -1,0 +1,57 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gy-ingress
+  namespace: gy
+  annotations:
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+spec:
+  ingressClassName: gy-alb
+  tls:
+    - hosts:
+        - api.guangyang.online
+        - pay.guangyang.online
+        - guangyang.online
+        - www.guangyang.online
+  rules:
+    - host: api.guangyang.online
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: pay.guangyang.online
+      http:
+        paths:
+          - path: /wechatpay/
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: guangyang.online
+      http:
+        paths:
+          - path: /wechatpay/
+            pathType: Prefix
+            backend:
+              service:
+                name: go
+                port:
+                  number: 8080
+    - host: www.guangyang.online
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+

@@ -1,0 +1,320 @@
+variables:
+  # 核心修复：强制 Git 在清理时忽略权限报错的文件，防止流水线死在 Checkout 阶段
+  GIT_CLEAN_FLAGS: -ffdx -e tmp/ -e wechatpay/
+
+  # ACR (Alibaba Cloud Container Registry)
+  # 在 GitLab 项目 Settings -> CI/CD -> Variables 里配置：
+  # - ACR_USERNAME / ACR_PASSWORD
+  # 可按需覆盖 ACR_NAMESPACE / IMAGE_TAG
+  # 说明（非常关键）：
+  # - 你的 GitLab Runner ECS 当前在 VPC: vpc-f8z6hufc72u4capmua46n
+  # - 你的 ACK/ACR 专有网络在另一个 VPC（不同 VPC 下 ACR 的 *-vpc 域名不会解析）
+  # 因此：
+  # - CI 推镜像：建议开启 ACR「公网入口」并使用公网域名（本默认值）
+  # - ACK 拉镜像：后续部署到 K8s 时可继续用 *-vpc 内网域名（更快更稳）
+  ACR_REGISTRY: guangyang-registry.cn-heyuan.cr.aliyuncs.com
+  ACR_NAMESPACE: guangyang
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+  # 0.01 元 = 1 分（可在 GitLab Variables 覆盖）
+  COMPARE_JOB_FEE_FEN: "1"
+
+stages:
+  - build_push
+  - deploy
+
+acr_build_push:
+  stage: build_push
+  # shell 执行器（宿主机需已安装 docker）
+  script:
+    - set -euo pipefail
+    - echo "======== [1/3] 校验变量 ========"
+    - test -n "${ACR_REGISTRY:-}"
+    - test -n "${ACR_NAMESPACE:-}"
+    - test -n "${ACR_USERNAME:-}"
+    - test -n "${ACR_PASSWORD:-}"
+    - test -n "${IMAGE_TAG:-}"
+    - echo "ACR_REGISTRY=$ACR_REGISTRY"
+    - echo "ACR_NAMESPACE=$ACR_NAMESPACE"
+    - echo "IMAGE_TAG=$IMAGE_TAG"
+
+    - echo "======== [2/3] 登录并构建镜像 ========"
+    - echo "$ACR_PASSWORD" | docker login --username "$ACR_USERNAME" --password-stdin "$ACR_REGISTRY"
+
+    - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
+    - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
+    - |
+      echo "======== (extra) mirror k6 image to ACR ========"
+      # ACK 集群侧拉 DockerHub 容易失败；把 k6 镜像同步到你自己的 ACR，供 k6 CronJob 使用
+      K6_VERSION="0.51.0"
+      docker pull "grafana/k6:${K6_VERSION}"
+      docker tag "grafana/k6:${K6_VERSION}" "$ACR_REGISTRY/$ACR_NAMESPACE/k6:${K6_VERSION}"
+      docker push "$ACR_REGISTRY/$ACR_NAMESPACE/k6:${K6_VERSION}"
+
+    - echo "======== [3/3] 推送镜像 ========"
+    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
+    - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
+
+    # main 分支额外推送 latest，方便 ACK 先用 latest 跑通
+    - |
+      if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
+        docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
+        docker tag "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
+        docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:latest"
+        docker push "$ACR_REGISTRY/$ACR_NAMESPACE/go:latest"
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# 预留：后续接 ACK 自动部署（kubectl/helm）
+deploy_ack:
+  stage: deploy
+  needs: ["acr_build_push"]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+  script:
+    - set -euo pipefail
+    - echo "======== [1/4] 准备 kubeconfig ========"
+    - test -n "${KUBECONFIG_B64:-}"
+    - mkdir -p "$HOME/.kube"
+    - echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+    - chmod 600 "$HOME/.kube/config"
+    - export KUBECONFIG="$HOME/.kube/config"
+
+    - echo "======== [2/4] 检查 kubectl ========"
+    - |
+      if ! command -v kubectl >/dev/null 2>&1; then
+        echo "kubectl 未安装，请先在 Runner ECS 上安装 kubectl（建议放到 /usr/local/bin/kubectl）"
+        exit 1
+      fi
+
+    - echo "======== [3/4] 连接集群验证 ========"
+    - kubectl version --client=true
+    - kubectl get nodes
+
+    - echo "======== [4/4] 部署到 ACK ========"
+    - echo "======== (pre) 配置 ACR 拉取凭据 ========"
+    - |
+      # 为 namespace gy 配置 imagePullSecret，解决 ACR 私有仓库 ImagePullBackOff
+      # 注意：镜像地址使用 *-vpc 域名时，secret 的 docker-server 也必须一致
+      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      if ! kubectl get ns gy >/dev/null 2>&1; then
+        kubectl apply -f k8s/00-namespace.yaml
+      fi
+      if ! kubectl -n gy get secret acr-pull >/dev/null 2>&1; then
+        test -n "${ACR_USERNAME:-}"
+        test -n "${ACR_PASSWORD:-}"
+        kubectl -n gy create secret docker-registry acr-pull \
+          --docker-server="$ACR_PULL_REGISTRY" \
+          --docker-username="$ACR_USERNAME" \
+          --docker-password="$ACR_PASSWORD"
+      fi
+      kubectl -n gy patch serviceaccount default \
+        -p '{"imagePullSecrets":[{"name":"acr-pull"}]}' >/dev/null || true
+
+    - kubectl apply -f k8s/
+    - |
+      # Python 服务已移除：apply 不会自动删除旧资源，这里显式清理残留（如存在）。
+      kubectl -n gy delete deploy/python svc/python --ignore-not-found >/dev/null 2>&1 || true
+      # compare-worker 重命名：清理旧的 go-worker（如存在）。
+      kubectl -n gy delete deploy/go-worker --ignore-not-found >/dev/null 2>&1 || true
+      # payment-worker 初次引入前可能不存在：无需处理
+    - echo "======== (post) 固定使用本次镜像 TAG ========"
+    - |
+      # 避免依赖 latest 造成“拉到旧镜像/缓存镜像”导致行为不一致
+      test -n "${IMAGE_TAG:-}"
+      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
+      kubectl -n gy set image deploy/compare-worker compare-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true
+      kubectl -n gy set image deploy/payment-worker payment-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true
+      kubectl -n gy set image deploy/web web="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
+
+    - echo "======== (post) 注入计费/微信支付配置（来自 GitLab Variables） ========"
+    - |
+      # 1) 强制 compare 费用（分）
+      kubectl -n gy set env deploy/go "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null || true
+      kubectl -n gy set env deploy/compare-worker "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null 2>&1 || true
+      kubectl -n gy set env deploy/payment-worker "COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}" >/dev/null 2>&1 || true
+
+      # 2) WeChatPay 运行时环境变量（与 docker-compose.prod.yml 保持一致）
+      # 目标：任何在 GitLab Variables 中配置的下列变量，永远同步进 gy/wechatpay-env；
+      # 不做删改/解码/校验，只做“原样同步”（避免集群残留旧值覆盖你当前配置）。
+      kubectl -n gy delete secret wechatpay-env --ignore-not-found >/dev/null 2>&1 || true
+      kubectl -n gy create secret generic wechatpay-env \
+        --from-literal="WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}" \
+        --from-literal="WECHAT_MCHID=${WECHAT_MCHID:-}" \
+        --from-literal="WECHAT_APPID=${WECHAT_APPID:-}" \
+        --from-literal="WECHAT_PAY_APPID=${WECHAT_PAY_APPID:-}" \
+        --from-literal="WECHAT_CORP_ID=${WECHAT_CORP_ID:-}" \
+        --from-literal="WECHAT_API_V3_KEY=${WECHAT_API_V3_KEY:-}" \
+        --from-literal="WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}" \
+        --from-literal="WECHAT_PLATFORM_PUBLIC_KEY=${WECHAT_PLATFORM_PUBLIC_KEY:-}" \
+        --from-literal="WECHAT_MOCK=${WECHAT_MOCK:-}" \
+        --from-literal="WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      # 3) WeChatPay 证书/密钥文件（全部用 GitLab File 变量塞文件）
+      #
+      # 你可以塞这些文件进同一个 Secret `wechatpay-cert`（会挂载到 /app/wechatpay/cert）：
+      # - 商户证书 zip（推荐你现在用这个）
+      #   - WECHAT_MERCHANT_CERT_ZIP_FILE (Type=File)：zip 文件本体
+      #   - WECHAT_MERCHANT_CERT_ZIP_NAME (Type=Variable)：文件名，必须是 <mchid>_YYYYMMDD_cert.zip
+      #   - 兼容：若你无法用 File 变量存二进制，可用：
+      #     - WECHAT_MERCHANT_CERT_ZIP_B64 (Type=Variable)：zip 的 base64（单行）
+      # - 平台公钥文件（验签公钥模式）
+      #   - WECHAT_PUB_KEY_PEM_FILE (Type=File)：pub_key.pem（内容为完整 PEM 公钥）
+      # - 平台证书文件（验签证书模式，推荐）
+      #   - WECHAT_PLATFORM_CERT_PEM_FILE (Type=File)：platform_cert.pem
+      # - （可选）cert.txt：仅作兼容/排查用，不参与平台验签
+      #   - WECHAT_CERT_TXT_FILE (Type=File)：cert.txt
+      #
+      # 也支持直接塞 pem 三件套（不用 zip）：
+      # - WECHAT_MERCHANT_KEY_PEM_FILE (Type=File)：merchant_key.pem
+      # - WECHAT_MERCHANT_CERT_PEM_FILE (Type=File)：merchant_cert.pem
+      #
+      wechatpay_any_file=0
+      wechatpay_from_file_args=""
+      tmpdir_files="$(mktemp -d)"
+
+      # 商户证书 zip：优先用 File 变量；若没有则支持 base64 变量解码
+      if [ -n "${WECHAT_MERCHANT_CERT_ZIP_FILE:-}" ] || [ -n "${WECHAT_MERCHANT_CERT_ZIP_B64:-}" ]; then
+        if [ -z "${WECHAT_MERCHANT_CERT_ZIP_NAME:-}" ]; then
+          echo "ERROR: 缺少 WECHAT_MERCHANT_CERT_ZIP_NAME（必须是 <mchid>_YYYYMMDD_cert.zip）" >&2
+          exit 1
+        fi
+        zip_path=""
+        if [ -n "${WECHAT_MERCHANT_CERT_ZIP_FILE:-}" ]; then
+          zip_in="$WECHAT_MERCHANT_CERT_ZIP_FILE"
+          zip_out="$tmpdir_files/$WECHAT_MERCHANT_CERT_ZIP_NAME"
+          # 兼容两种用法：
+          # - File 变量内容是“原始 zip（二进制）”
+          # - File 变量内容是“base64(zip) 文本”（很多人会这么存）
+          if dd if="$zip_in" bs=1 count=2 2>/dev/null | grep -q "PK"; then
+            zip_path="$zip_in"
+          elif base64 -d < "$zip_in" > "$zip_out" 2>/dev/null && dd if="$zip_out" bs=1 count=2 2>/dev/null | grep -q "PK"; then
+            zip_path="$zip_out"
+          else
+            echo "ERROR: WECHAT_MERCHANT_CERT_ZIP_FILE 既不是 zip（二进制，PK 开头），也不是 base64(zip)。" >&2
+            exit 1
+          fi
+        else
+          zip_path="$tmpdir_files/$WECHAT_MERCHANT_CERT_ZIP_NAME"
+          echo "$WECHAT_MERCHANT_CERT_ZIP_B64" | base64 -d > "$zip_path"
+        fi
+        wechatpay_any_file=1
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=$WECHAT_MERCHANT_CERT_ZIP_NAME=$zip_path"
+      fi
+      if [ -n "${WECHAT_MERCHANT_KEY_PEM_FILE:-}" ]; then
+        wechatpay_any_file=1
+        key_in="$WECHAT_MERCHANT_KEY_PEM_FILE"
+        key_out="$tmpdir_files/merchant_key.pem"
+        if grep -q "BEGIN " "$key_in" 2>/dev/null; then
+          key_path="$key_in"
+        elif base64 -d < "$key_in" > "$key_out" 2>/dev/null && grep -q "BEGIN " "$key_out" 2>/dev/null; then
+          key_path="$key_out"
+        else
+          key_path="$key_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_key.pem=$key_path"
+      fi
+      if [ -n "${WECHAT_MERCHANT_CERT_PEM_FILE:-}" ]; then
+        wechatpay_any_file=1
+        cert_in="$WECHAT_MERCHANT_CERT_PEM_FILE"
+        cert_out="$tmpdir_files/merchant_cert.pem"
+        if grep -q "BEGIN CERTIFICATE" "$cert_in" 2>/dev/null; then
+          cert_path="$cert_in"
+        elif base64 -d < "$cert_in" > "$cert_out" 2>/dev/null && grep -q "BEGIN CERTIFICATE" "$cert_out" 2>/dev/null; then
+          cert_path="$cert_out"
+        else
+          cert_path="$cert_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=merchant_cert.pem=$cert_path"
+      fi
+      if [ -n "${WECHAT_PLATFORM_CERT_PEM_FILE:-}" ]; then
+        wechatpay_any_file=1
+        pc_in="$WECHAT_PLATFORM_CERT_PEM_FILE"
+        pc_out="$tmpdir_files/platform_cert.pem"
+        if grep -q "BEGIN CERTIFICATE" "$pc_in" 2>/dev/null; then
+          pc_path="$pc_in"
+        elif base64 -d < "$pc_in" > "$pc_out" 2>/dev/null && grep -q "BEGIN CERTIFICATE" "$pc_out" 2>/dev/null; then
+          pc_path="$pc_out"
+        else
+          pc_path="$pc_in"
+        fi
+        # 快速校验：证书需要 BEGIN+END
+        if grep -q "BEGIN CERTIFICATE" "$pc_path" 2>/dev/null && ! grep -q "END CERTIFICATE" "$pc_path" 2>/dev/null; then
+          echo "ERROR: platform_cert.pem 不完整（缺少 END CERTIFICATE）。你很可能塞的是 base64 文本或内容被截断。" >&2
+          exit 1
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=platform_cert.pem=$pc_path"
+      fi
+      if [ -n "${WECHAT_PUB_KEY_PEM_FILE:-}" ]; then
+        wechatpay_any_file=1
+        pub_in="$WECHAT_PUB_KEY_PEM_FILE"
+        pub_out="$tmpdir_files/pub_key.pem"
+        if grep -q "BEGIN PUBLIC KEY" "$pub_in" 2>/dev/null || grep -q "BEGIN CERTIFICATE" "$pub_in" 2>/dev/null; then
+          pub_path="$pub_in"
+        elif base64 -d < "$pub_in" > "$pub_out" 2>/dev/null && (grep -q "BEGIN PUBLIC KEY" "$pub_out" 2>/dev/null || grep -q "BEGIN CERTIFICATE" "$pub_out" 2>/dev/null); then
+          pub_path="$pub_out"
+        else
+          pub_path="$pub_in"
+        fi
+        # 快速校验：公钥/证书需要 BEGIN+END
+        if grep -q "BEGIN PUBLIC KEY" "$pub_path" 2>/dev/null && ! grep -q "END PUBLIC KEY" "$pub_path" 2>/dev/null; then
+          echo "ERROR: pub_key.pem 不完整（缺少 END PUBLIC KEY）。" >&2
+          exit 1
+        fi
+        if grep -q "BEGIN CERTIFICATE" "$pub_path" 2>/dev/null && ! grep -q "END CERTIFICATE" "$pub_path" 2>/dev/null; then
+          echo "ERROR: pub_key.pem 看起来是证书但不完整（缺少 END CERTIFICATE）。" >&2
+          exit 1
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=pub_key.pem=$pub_path"
+      fi
+      if [ -n "${WECHAT_CERT_TXT_FILE:-}" ]; then
+        wechatpay_any_file=1
+        txt_in="$WECHAT_CERT_TXT_FILE"
+        txt_out="$tmpdir_files/cert.txt"
+        # cert.txt usually is plain text; if user stored it as base64, decode to keep the original.
+        if base64 -d < "$txt_in" > "$txt_out" 2>/dev/null; then
+          # Heuristic: decoded text should contain something meaningful (pem header or readable ascii)
+          if grep -q "BEGIN " "$txt_out" 2>/dev/null || grep -Eq "[A-Za-z0-9]" "$txt_out" 2>/dev/null; then
+            txt_path="$txt_out"
+          else
+            txt_path="$txt_in"
+          fi
+        else
+          txt_path="$txt_in"
+        fi
+        wechatpay_from_file_args="$wechatpay_from_file_args --from-file=cert.txt=$txt_path"
+      fi
+
+      if [ "$wechatpay_any_file" = "1" ]; then
+        kubectl -n gy delete secret wechatpay-cert --ignore-not-found >/dev/null 2>&1 || true
+        # shellcheck disable=SC2086
+        kubectl -n gy create secret generic wechatpay-cert $wechatpay_from_file_args \
+          --dry-run=client -o yaml | kubectl apply -f -
+      else
+        echo "skip wechatpay-cert: set GitLab File vars (zip / pub_key.pem / platform_cert.pem / merchant pem...)"
+      fi
+
+      # Secret 更新不会热加载到容器环境变量，显式滚动一次确保生效
+      kubectl -n gy rollout restart deploy/go >/dev/null || true
+      kubectl -n gy rollout restart deploy/compare-worker >/dev/null 2>&1 || true
+      kubectl -n gy rollout restart deploy/payment-worker >/dev/null 2>&1 || true
+
+      kubectl -n gy rollout status deploy/go --timeout=180s
+      kubectl -n gy rollout status deploy/compare-worker --timeout=180s >/dev/null 2>&1 || true
+      kubectl -n gy rollout status deploy/payment-worker --timeout=180s >/dev/null 2>&1 || true
+      kubectl -n gy rollout status deploy/web --timeout=180s
+    - kubectl -n gy get deploy,svc,pod
+    - |
+      # 若 Pod 处于 Pending，自动输出调度事件，方便定位（资源不足/污点/节点未就绪等）
+      bad="$(kubectl -n gy get pod --no-headers 2>/dev/null | awk '$3=="Pending"||$3=="ImagePullBackOff"||$3=="ErrImagePull"{print $1}' || true)"
+      if [ -n "$bad" ]; then
+        echo "======== Pod Events (Pending/ImagePullBackOff) ========"
+        for p in $bad; do
+          echo "--- describe pod/$p (events) ---"
+          kubectl -n gy describe pod "$p" | sed -n '/^Events:/,$p' || true
+        done
+      fi

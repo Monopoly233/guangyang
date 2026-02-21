@@ -1,0 +1,28 @@
+.DS_Store
+
+# Python (仅用于 Go 镜像内的 unoconvert 客户端，不再有 Python 服务代码)
+.venv/
+**/__pycache__/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Go
+gobackend/tmp/
+tmp/
+
+# WeChat Pay secrets/certs (DO NOT COMMIT)
+wechatpay/apikey/
+wechatpay/cert/
+
+# local env files
+.env
+.env.*
+
+# env.prod
+env.prod
+
+# Kubernetes kubeconfig (DO NOT COMMIT)
+k8s/kubeconfig*
+k8s/kubecongif*

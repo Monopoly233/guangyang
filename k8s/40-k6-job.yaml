@@ -1,0 +1,90 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k6-compare
+  namespace: gy
+spec:
+  # 默认挂起：避免 CI `kubectl apply -f k8s/` 时自动跑压测
+  suspend: true
+  schedule: "0 0 1 1 *" # dummy schedule (never used while suspended)
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: k6-compare
+        spec:
+          restartPolicy: Never
+          initContainers:
+            - name: fetch-files
+              # 用你自己的 ACR 镜像（集群已在用，避免拉 DockerHub 失败）
+              image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                # 需要你提供可下载的 URL（推荐 OSS 签名 URL，expire 设久一点）
+                - name: FILE1_URL
+                  value: ""
+                - name: FILE2_URL
+                  value: ""
+              command:
+                - sh
+                - -lc
+                - |
+                  set -euo pipefail
+                  if [ -z "${FILE1_URL:-}" ] || [ -z "${FILE2_URL:-}" ]; then
+                    echo "ERROR: missing FILE1_URL/FILE2_URL" >&2
+                    exit 1
+                  fi
+                  mkdir -p /data
+                  echo "Downloading file1..."
+                  wget -qO /data/01.xlsx "$FILE1_URL"
+                  echo "Downloading file2..."
+                  wget -qO /data/02.xlsx "$FILE2_URL"
+                  ls -lh /data
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          containers:
+            - name: k6
+              # 不依赖 DockerHub：使用你 ACR 里的镜像（由 CI 同步）
+              image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/k6:0.51.0
+              imagePullPolicy: IfNotPresent
+              args:
+                - run
+                - --vus
+                - "10"
+                - --duration
+                - 2m
+                - /work/k6_compare.js
+              env:
+                # 集群内直连 go Service（不要带 /api 前缀）
+                - name: BASE_URL
+                  value: "http://go:8080"
+                - name: FILE1
+                  value: "/data/01.xlsx"
+                - name: FILE2
+                  value: "/data/02.xlsx"
+              volumeMounts:
+                - name: script
+                  mountPath: /work
+                  readOnly: true
+                - name: data
+                  mountPath: /data
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 1
+                  memory: 512Mi
+          volumes:
+            # 由你从 repo 的 loadtest/k6_compare.js 创建 ConfigMap：k6-script
+            - name: script
+              configMap:
+                name: k6-script
+            - name: data
+              emptyDir: {}
+
