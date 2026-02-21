@@ -18,6 +18,14 @@ const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
 const FILE1 = __ENV.FILE1;
 const FILE2 = __ENV.FILE2;
 
+// k6 规则：open() 只能在 init stage（全局作用域）调用
+let file1Bytes = null;
+let file2Bytes = null;
+if (FILE1 && FILE2) {
+  file1Bytes = open(FILE1, "b");
+  file2Bytes = open(FILE2, "b");
+}
+
 function createJob(file1Bytes, file2Bytes) {
   const form = {
     file1: http.file(file1Bytes, "file1.xlsx"),
@@ -56,8 +64,12 @@ export default function () {
     return;
   }
 
-  const f1 = open(FILE1, "b");
-  const f2 = open(FILE2, "b");
+  const f1 = file1Bytes;
+  const f2 = file2Bytes;
+  if (!f1 || !f2) {
+    sleep(1);
+    return;
+  }
 
   const job = createJob(f1, f2);
   const jobId = job && job.jobId;
