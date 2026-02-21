@@ -12,8 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"gobackend/compare"
-	"gobackend/ossstore"
+	"gobackend/paygate"
 	"gobackend/redislock"
 	"gobackend/store"
 	"gobackend/streamq"
@@ -35,21 +34,9 @@ func main() {
 		DB:       readEnvIntDefault("REDIS_DB", 0),
 	})
 
-	var ossSt *ossstore.Store
-	if st, enabled, err := ossstore.NewFromEnv(); err != nil {
-		if enabled {
-			log.Fatalf("init oss store failed: %v", err)
-		}
-	} else if enabled {
-		ossSt = st
-		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
-	} else {
-		log.Fatalf("OSS 未启用：worker 无法处理输入/输出文件")
-	}
-
-	streamKey := readEnvDefault("COMPARE_STREAM_KEY", "gy:comparejobs:stream")
-	group := readEnvDefault("COMPARE_STREAM_GROUP", "gy-compare")
-	maxLen := int64(readEnvIntDefault("COMPARE_STREAM_MAXLEN", 100000))
+	streamKey := readEnvDefault("COMPARE_PAYGATE_STREAM_KEY", "gy:comparejobs:paygate")
+	group := readEnvDefault("COMPARE_PAYGATE_STREAM_GROUP", "gy-paygate")
+	maxLen := int64(readEnvIntDefault("COMPARE_PAYGATE_STREAM_MAXLEN", 100000))
 
 	q := streamq.NewRedisStreamQueue(rdb, streamKey, group, maxLen)
 	ctx, cancel := signalContext()
@@ -59,26 +46,18 @@ func main() {
 		log.Fatalf("ensure stream group failed: %v", err)
 	}
 
-	// Pay-gate stream (payment-worker consumes it). compare-worker only enqueues.
-	payStreamKey := readEnvDefault("COMPARE_PAYGATE_STREAM_KEY", "gy:comparejobs:paygate")
-	payGroup := readEnvDefault("COMPARE_PAYGATE_STREAM_GROUP", "gy-paygate")
-	payMaxLen := int64(readEnvIntDefault("COMPARE_PAYGATE_STREAM_MAXLEN", 100000))
-	payQ := streamq.NewRedisStreamQueue(rdb, payStreamKey, payGroup, payMaxLen)
-
-	tmpRoot := readEnvDefault("TMP_ROOT", "./tmp")
-	lock := redislock.New(rdb, readEnvDefault("COMPARE_JOB_LOCK_PREFIX", "gy:lock:comparejob:"))
-	worker := compare.NewWorker(jobStore, tmpRoot, ossSt, payQ, lock)
+	lock := redislock.New(rdb, readEnvDefault("COMPARE_PAYGATE_LOCK_PREFIX", "gy:lock:comparejob:"))
+	worker := paygate.NewWorker(jobStore, lock)
 
 	consumerName := strings.TrimSpace(os.Getenv("WORKER_CONSUMER_NAME"))
 	if consumerName == "" {
 		consumerName = strings.TrimSpace(os.Getenv("HOSTNAME"))
 	}
 	cons := streamq.NewConsumer(rdb, streamKey, group, consumerName)
-	cons.SetConcurrency(readEnvIntDefault("STREAM_CONCURRENCY", 4))
-	log.Printf("compare-worker start stream=%s group=%s consumer=%s", streamKey, group, consumerName)
+	cons.SetConcurrency(readEnvIntDefault("STREAM_CONCURRENCY", 8))
+	log.Printf("payment-worker start stream=%s group=%s consumer=%s", streamKey, group, consumerName)
 
 	err = cons.ConsumeLoop(ctx, func(ctx context.Context, jobID string) error {
-		// handler should never crash the loop; all failures are persisted to job store.
 		return worker.Process(ctx, jobID)
 	})
 	if err != nil && err != context.Canceled {
@@ -113,7 +92,6 @@ func signalContext() (context.Context, context.CancelFunc) {
 	go func() {
 		<-ch
 		cancel()
-		// second signal: hard exit
 		select {
 		case <-ch:
 			os.Exit(1)

@@ -108,6 +108,7 @@ type Consumer struct {
 	consumer string
 	block    time.Duration
 	count    int64
+	concur   chan struct{}
 
 	// Pending handling (XAUTOCLAIM).
 	claimMinIdle    time.Duration
@@ -135,6 +136,19 @@ func NewConsumer(rdb *redis.Client, stream, group, consumer string) *Consumer {
 		claimStart:   "0-0",
 		claimEvery:   3 * time.Second,
 	}
+}
+
+// SetConcurrency sets the max concurrent handler goroutines.
+// n<=1 means run sequentially.
+func (c *Consumer) SetConcurrency(n int) {
+	if c == nil {
+		return
+	}
+	if n <= 1 {
+		c.concur = nil
+		return
+	}
+	c.concur = make(chan struct{}, n)
 }
 
 func (c *Consumer) ConsumeLoop(ctx context.Context, handler Handler) error {
@@ -176,7 +190,15 @@ func (c *Consumer) ConsumeLoop(ctx context.Context, handler Handler) error {
 		}
 		for _, s := range res {
 			for _, msg := range s.Messages {
-				c.handleOne(ctx, handler, msg)
+				if c.concur == nil {
+					c.handleOne(ctx, handler, msg)
+					continue
+				}
+				c.concur <- struct{}{}
+				go func(m redis.XMessage) {
+					defer func() { <-c.concur }()
+					c.handleOne(ctx, handler, m)
+				}(msg)
 			}
 		}
 	}
@@ -256,6 +278,14 @@ func (c *Consumer) maybeAutoClaim(ctx context.Context, handler Handler) {
 		c.claimStart = nextStart
 	}
 	for _, msg := range msgs {
-		c.handleOne(ctx, handler, msg)
+		if c.concur == nil {
+			c.handleOne(ctx, handler, msg)
+			continue
+		}
+		c.concur <- struct{}{}
+		go func(m redis.XMessage) {
+			defer func() { <-c.concur }()
+			c.handleOne(ctx, handler, m)
+		}(msg)
 	}
 }

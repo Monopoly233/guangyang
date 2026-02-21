@@ -14,7 +14,8 @@ RUN go mod download
 
 COPY . .
 RUN go build -o /out/go-api . && \
-    go build -o /out/compare-worker ./cmd/compare-worker
+    go build -o /out/compare-worker ./cmd/compare-worker && \
+    go build -o /out/payment-worker ./cmd/payment-worker
 
 FROM alpine:3.20
 WORKDIR /app
@@ -31,6 +32,7 @@ ENV PATH="/opt/unoserver-client/bin:${PATH}"
 
 COPY --from=build /out/go-api /app/go-api
 COPY --from=build /out/compare-worker /app/compare-worker
+COPY --from=build /out/payment-worker /app/payment-worker
 
 EXPOSE 8080
 ENV PORT=8080

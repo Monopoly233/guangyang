@@ -199,6 +199,8 @@ spec:
           imagePullPolicy: Always
           command: ["/app/compare-worker"]
           env:
+            - name: STREAM_CONCURRENCY
+              value: "4"
             - name: TMP_ROOT
               value: "/app/tmp"
             - name: REDIS_ADDR
@@ -209,6 +211,13 @@ spec:
             - name: COMPARE_STREAM_GROUP
               value: "gy-compare"
             - name: COMPARE_STREAM_MAXLEN
+              value: "100000"
+            # Pay-gate stream (compare-worker enqueue; payment-worker consumes)
+            - name: COMPARE_PAYGATE_STREAM_KEY
+              value: "gy:comparejobs:paygate"
+            - name: COMPARE_PAYGATE_STREAM_GROUP
+              value: "gy-paygate"
+            - name: COMPARE_PAYGATE_STREAM_MAXLEN
               value: "100000"
             - name: COMPARE_JOB_FEE_FEN
               value: "1"
@@ -319,6 +328,108 @@ spec:
                   audience: sts.aliyuncs.com
                   expirationSeconds: 3600
                   path: token
+        - name: wechatpay-cert
+          secret:
+            secretName: wechatpay-cert
+            optional: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-worker
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-worker
+  template:
+    metadata:
+      labels:
+        app: payment-worker
+    spec:
+      serviceAccountName: go-sa
+      containers:
+        - name: payment-worker
+          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          imagePullPolicy: Always
+          command: ["/app/payment-worker"]
+          env:
+            - name: STREAM_CONCURRENCY
+              value: "8"
+            - name: REDIS_ADDR
+              value: "10.0.40.253:6379"
+            # Pay-gate stream
+            - name: COMPARE_PAYGATE_STREAM_KEY
+              value: "gy:comparejobs:paygate"
+            - name: COMPARE_PAYGATE_STREAM_GROUP
+              value: "gy-paygate"
+            - name: COMPARE_PAYGATE_STREAM_MAXLEN
+              value: "100000"
+            - name: COMPARE_JOB_FEE_FEN
+              value: "1"
+            # WeChatPay（payment-worker 需要下单）
+            - name: WECHAT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_NOTIFY_URL
+                  optional: true
+            - name: WECHAT_MCHID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MCHID
+                  optional: true
+            - name: WECHAT_PAY_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PAY_APPID
+                  optional: true
+            - name: WECHAT_APPID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_APPID
+                  optional: true
+            - name: WECHAT_API_V3_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_API_V3_KEY
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY_ID
+                  optional: true
+            - name: WECHAT_PLATFORM_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_PLATFORM_PUBLIC_KEY
+                  optional: true
+            - name: WECHAT_MOCK
+              valueFrom:
+                secretKeyRef:
+                  name: wechatpay-env
+                  key: WECHAT_MOCK
+                  optional: true
+          volumeMounts:
+            - name: wechatpay-cert
+              mountPath: /app/wechatpay/cert
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+      volumes:
         - name: wechatpay-cert
           secret:
             secretName: wechatpay-cert

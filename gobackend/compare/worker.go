@@ -17,20 +17,20 @@ import (
 	"gobackend/redislock"
 	"gobackend/store"
 	"gobackend/streamq"
-	"gobackend/wechat"
 )
 
 type Worker struct {
 	store    store.CompareJobStore
 	tmpRoot  string
 	oss      *ossstore.Store
+	payq     streamq.CompareQueue
 	lock     *redislock.Client
 	lockTTL  time.Duration
 	lockKick time.Duration
 	inflight chan struct{}
 }
 
-func NewWorker(st store.CompareJobStore, tmpRoot string, oss *ossstore.Store, lock *redislock.Client) *Worker {
+func NewWorker(st store.CompareJobStore, tmpRoot string, oss *ossstore.Store, payq streamq.CompareQueue, lock *redislock.Client) *Worker {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
@@ -44,6 +44,7 @@ func NewWorker(st store.CompareJobStore, tmpRoot string, oss *ossstore.Store, lo
 		store:    st,
 		tmpRoot:  tmpRoot,
 		oss:      oss,
+		payq:     payq,
 		lock:     lock,
 		lockTTL:  lockTTL,
 		lockKick: lockKick,
@@ -131,9 +132,18 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 	if job.Status == domain.CompareJobStatusReady || job.Status == domain.CompareJobStatusFailed {
 		return streamq.Terminal(nil)
 	}
-	// If result already exists, only progress payment state (idempotent).
+	// If result already exists, only enqueue pay-gate stage (idempotent).
 	if strings.TrimSpace(job.ResultOSSKey) != "" && (job.Status == domain.CompareJobStatusAwaitingPayment || job.Status == domain.CompareJobStatusProcessing) {
-		return streamq.Terminal(w.finishPaymentGate(jobID, job, strings.TrimSpace(job.ResultOSSKey)))
+		if w.payq == nil {
+			return streamq.Terminal(w.fail(jobID, errors.New("paygate queue 未初始化")))
+		}
+		enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := w.payq.Enqueue(enqueueCtx, jobID); err != nil {
+			// keep pending to retry enqueue (no re-compare due to ResultOSSKey short-circuit)
+			return err
+		}
+		return streamq.Terminal(nil)
 	}
 	if w.oss == nil || !w.oss.Enabled() {
 		return streamq.Terminal(w.fail(jobID, errors.New("OSS 未启用")))
@@ -207,7 +217,16 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 	if job.Status == domain.CompareJobStatusCancelled {
 		return streamq.Terminal(nil)
 	}
-	return streamq.Terminal(w.finishPaymentGate(jobID, job, ossKey))
+	if w.payq == nil {
+		return streamq.Terminal(w.fail(jobID, errors.New("paygate queue 未初始化")))
+	}
+	enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := w.payq.Enqueue(enqueueCtx, jobID); err != nil {
+		// keep pending: will retry enqueue only (ResultOSSKey exists)
+		return err
+	}
+	return streamq.Terminal(nil)
 }
 
 func (w *Worker) fail(jobID string, err error) error {
@@ -223,80 +242,6 @@ func (w *Worker) fail(jobID string, err error) error {
 		j.Error = msg
 	})
 	return err
-}
-
-func (w *Worker) finishPaymentGate(jobID string, job *domain.CompareJob, ossKey string) error {
-	if w == nil || w.store == nil {
-		return errors.New("worker/store 未初始化")
-	}
-	if strings.TrimSpace(jobID) == "" {
-		return errors.New("jobID 为空")
-	}
-	if job == nil {
-		return errors.New("job 为空")
-	}
-	ossKey = strings.TrimSpace(ossKey)
-	if ossKey == "" {
-		return w.fail(jobID, errors.New("ResultOSSKey 为空"))
-	}
-
-	if job.Status == domain.CompareJobStatusCancelled {
-		return nil
-	}
-
-	// If payment already confirmed, release.
-	if job.Paid {
-		_, _, _ = w.store.Update(jobID, func(j *domain.CompareJob) {
-			if j.Status == domain.CompareJobStatusCancelled {
-				return
-			}
-			j.Status = domain.CompareJobStatusReady
-			j.ResultOSSKey = ossKey
-			j.ResultPath = ""
-		})
-		return nil
-	}
-
-	feeFen := FeeFen()
-	if feeFen <= 0 {
-		now := time.Now()
-		_, _, _ = w.store.Update(jobID, func(j *domain.CompareJob) {
-			if j.Status == domain.CompareJobStatusCancelled {
-				return
-			}
-			if !j.Paid {
-				j.Paid = true
-				j.PaidAt = &now
-			}
-			j.Status = domain.CompareJobStatusReady
-			j.ResultOSSKey = ossKey
-			j.ResultPath = ""
-			j.AmountYuan = 0
-			j.CodeURL = ""
-		})
-		return nil
-	}
-
-	// If already awaiting payment and has code_url, don't create another order.
-	if job.Status == domain.CompareJobStatusAwaitingPayment && strings.TrimSpace(job.CodeURL) != "" {
-		return nil
-	}
-
-	codeURL, err := wechat.CreateNativeOrder(jobID, feeFen)
-	if err != nil {
-		return w.fail(jobID, fmt.Errorf("创建微信支付订单失败: %w", err))
-	}
-	_, _, _ = w.store.Update(jobID, func(j *domain.CompareJob) {
-		if j.Status == domain.CompareJobStatusCancelled || j.Paid {
-			return
-		}
-		j.Status = domain.CompareJobStatusAwaitingPayment
-		j.ResultOSSKey = ossKey
-		j.ResultPath = ""
-		j.AmountYuan = float64(feeFen) / 100.0
-		j.CodeURL = codeURL
-	})
-	return nil
 }
 
 func readEnvDurationSecondsDefault(key string, defaultVal time.Duration) time.Duration {
