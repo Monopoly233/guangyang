@@ -101,7 +101,7 @@ type Artifacts struct {
 	DiffKeys  []string
 	LeftRows  map[string][]string // key -> values aligned with OrderedCols
 	RightRows map[string][]string // key -> values aligned with OrderedCols
-	DiffMask  map[string][]bool   // key -> mask aligned with OrderedCols
+	DiffMask  map[string][]uint64 // key -> bitset aligned with OrderedCols
 }
 
 func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
@@ -173,7 +173,7 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		DiffKeys:    nil,
 		LeftRows:    map[string][]string{},
 		RightRows:   map[string][]string{},
-		DiffMask:    map[string][]bool{},
+		DiffMask:    map[string][]uint64{},
 	}
 
 	if len(common) == 0 {
@@ -184,7 +184,7 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		hasDiff bool
 		left    []string
 		right   []string
-		mask    []bool
+		mask    []uint64
 	}
 
 	// 大文件时并行算 diff，但保持输出顺序完全确定（按 common 的排序顺序收敛）。
@@ -199,7 +199,8 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		hasDiff := false
 		left := make([]string, len(orderedCols))
 		right := make([]string, len(orderedCols))
-		mask := make([]bool, len(orderedCols))
+		maskWords := diffMaskWords(len(orderedCols))
+		mask := make([]uint64, maskWords)
 		for i := 0; i < len(orderedCols); i++ {
 			i1 := colIdx1[i]
 			i2 := colIdx2[i]
@@ -215,11 +216,19 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 
 			n1 := normalizeScalarForCompare(v1)
 			n2 := normalizeScalarForCompare(v2)
-			isDiff := n1 != n2
+			h1 := fingerprint64(n1)
+			h2 := fingerprint64(n2)
+			isDiff := false
+			if h1 != h2 {
+				isDiff = true
+			} else if n1 != n2 {
+				// hash collision fallback (keep exact semantics)
+				isDiff = true
+			}
 			if isDiff {
 				hasDiff = true
+				diffMaskSet(mask, i)
 			}
-			mask[i] = isDiff
 		}
 		results[idx] = diffResult{hasDiff: hasDiff, left: left, right: right, mask: mask}
 	}
@@ -265,6 +274,49 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		art.DiffMask[k] = r.mask
 	}
 	return art, nil
+}
+
+func diffMaskWords(nCols int) int {
+	if nCols <= 0 {
+		return 0
+	}
+	return (nCols + 63) / 64
+}
+
+func diffMaskSet(mask []uint64, i int) {
+	if i < 0 {
+		return
+	}
+	w := i >> 6
+	b := uint(i & 63)
+	if w < 0 || w >= len(mask) {
+		return
+	}
+	mask[w] |= 1 << b
+}
+
+func diffMaskGet(mask []uint64, i int) bool {
+	if i < 0 {
+		return false
+	}
+	w := i >> 6
+	b := uint(i & 63)
+	if w < 0 || w >= len(mask) {
+		return false
+	}
+	return (mask[w]&(1<<b) != 0)
+}
+
+func fingerprint64(s string) uint64 {
+	// Deterministic, zero-allocation FNV-1a (64-bit).
+	// Collisions are handled by the n1!=n2 fallback.
+	var h uint64 = 14695981039346656037
+	const prime uint64 = 1099511628211
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+	return h
 }
 
 func indexOfHeader(headers []string, name string) int {

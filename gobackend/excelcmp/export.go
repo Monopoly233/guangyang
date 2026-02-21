@@ -182,10 +182,7 @@ func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, f
 			if i < len(right) {
 				vb = right[i]
 			}
-			isDiff := false
-			if i < len(mask) {
-				isDiff = mask[i]
-			}
+			isDiff := diffMaskGet(mask, i)
 
 			ca := excelize.Cell{Value: safeCellValue(va)}
 			cb := excelize.Cell{Value: safeCellValue(vb)}
