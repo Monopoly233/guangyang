@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-compare
+  namespace: gy
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: k6-compare
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.51.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - --vus
+            - "10"
+            - --duration
+            - 2m
+            - /work/k6_compare.js
+          env:
+            # 集群内直连 go Service（不要带 /api 前缀）
+            - name: BASE_URL
+              value: "http://go:8080"
+            - name: FILE1
+              value: "/data/01.xlsx"
+            - name: FILE2
+              value: "/data/02.xlsx"
+          volumeMounts:
+            - name: script
+              mountPath: /work
+              readOnly: true
+            - name: data
+              mountPath: /data
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+      volumes:
+        # 由你从 repo 的 loadtest/k6_compare.js 创建 ConfigMap：k6-script
+        - name: script
+          configMap:
+            name: k6-script
+        # 由你从 repo 的 loadtest/01.xlsx & loadtest/02.xlsx 创建 Secret：k6-files
+        - name: data
+          secret:
+            secretName: k6-files
+
