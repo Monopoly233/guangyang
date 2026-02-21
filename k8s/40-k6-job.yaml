@@ -49,7 +49,8 @@ spec:
                   mountPath: /data
           containers:
             - name: k6
-              image: grafana/k6:0.51.0
+              # 不依赖 DockerHub：使用你 ACR 里的镜像（由 CI 同步）
+              image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/k6:0.51.0
               imagePullPolicy: IfNotPresent
               args:
                 - run

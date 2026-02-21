@@ -43,6 +43,13 @@ acr_build_push:
 
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG" -f frontend/Dockerfile frontend
     - docker build -t "$ACR_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" -f gobackend/Dockerfile gobackend
+    - |
+      echo "======== (extra) mirror k6 image to ACR ========"
+      # ACK 集群侧拉 DockerHub 容易失败；把 k6 镜像同步到你自己的 ACR，供 k6 CronJob 使用
+      K6_VERSION="0.51.0"
+      docker pull "grafana/k6:${K6_VERSION}"
+      docker tag "grafana/k6:${K6_VERSION}" "$ACR_REGISTRY/$ACR_NAMESPACE/k6:${K6_VERSION}"
+      docker push "$ACR_REGISTRY/$ACR_NAMESPACE/k6:${K6_VERSION}"
 
     - echo "======== [3/3] 推送镜像 ========"
     - docker push "$ACR_REGISTRY/$ACR_NAMESPACE/web:$IMAGE_TAG"
