@@ -3,10 +3,8 @@ package excelcmp
 import (
 	"errors"
 	"fmt"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 )
 
 var primaryKeyCandidates = []string{"id", "编号", "编码", "资产编号", "资产编码", "序号", "资产号", "code", "no", "序列号"}
@@ -93,20 +91,20 @@ func GuessPrimaryKeyColumn(tbl *Table, checkRows int) (string, bool) {
 
 type Artifacts struct {
 	Key         string
-	Reduced     *Table // file1-only, headers in file1 order
-	Increased   *Table // file2-only, headers in file2 order
+	ReducedKeys []string // file1-only keys (sorted)
+	IncKeys     []string // file2-only keys (sorted)
+	RedHeaders  []string // file1 headers order
+	IncHeaders  []string // file2 headers order
 	OrderedCols []string
 
-	// Only differing keys (normalized key as string)
-	DiffKeys  []string
-	// Instead of materializing aligned rows (huge allocations), we keep references
-	// to the original key->row maps and column index mapping for export-time access.
+	// Common keys between file1/file2 (sorted). Export will stream diff rows by scanning this list.
+	CommonKeys []string
+
+	// Export-time access: keep references to the original key->row maps and column index mapping.
 	LeftByKey  map[string][]string // key -> original row values (file1 headers order)
 	RightByKey map[string][]string // key -> original row values (file2 headers order)
 	ColIdx1    []int               // aligned with OrderedCols: index into file1 row (or -1)
 	ColIdx2    []int               // aligned with OrderedCols: index into file2 row (or -1)
-
-	DiffMask map[string][]uint64 // key -> bitset aligned with OrderedCols
 }
 
 func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
@@ -161,9 +159,6 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 	sort.Strings(only2)
 	sort.Strings(common)
 
-	reduced := buildSubTableFromMap(headers1, only1, m1)
-	increased := buildSubTableFromMap(headers2, only2, m2)
-
 	orderedCols := orderedUnionCols(headers1, headers2, key)
 
 	hidx1 := headerIndexMap(headers1)
@@ -172,139 +167,18 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 
 	art := &Artifacts{
 		Key:         key,
-		Reduced:     reduced,
-		Increased:   increased,
+		ReducedKeys: only1,
+		IncKeys:     only2,
+		RedHeaders:  append([]string(nil), headers1...),
+		IncHeaders:  append([]string(nil), headers2...),
 		OrderedCols: orderedCols,
-		DiffKeys:    nil,
+		CommonKeys:  common,
 		LeftByKey:   m1,
 		RightByKey:  m2,
 		ColIdx1:     colIdx1,
 		ColIdx2:     colIdx2,
-		DiffMask:    map[string][]uint64{},
 	}
 
-	if len(common) == 0 {
-		return art, nil
-	}
-
-	type diffResult struct {
-		hasDiff bool
-		mask    []uint64
-	}
-
-	type normFP struct {
-		norm string
-		fp   uint64
-	}
-	type normCache struct {
-		m   map[string]normFP
-		max int
-	}
-	newNormCache := func(max int) *normCache {
-		if max <= 0 {
-			max = 50000
-		}
-		return &normCache{m: make(map[string]normFP, 1024), max: max}
-	}
-	cachedNormalizeFP := func(cache *normCache, raw string) (string, uint64) {
-		// Only cache "small" strings to avoid blowing up memory on huge unique cells.
-		if cache != nil {
-			if len(raw) <= 64 {
-				if v, ok := cache.m[raw]; ok {
-					return v.norm, v.fp
-				}
-				n := normalizeScalarForCompare(raw)
-				fp := fingerprint64(n)
-				if len(cache.m) < cache.max {
-					cache.m[raw] = normFP{norm: n, fp: fp}
-				}
-				return n, fp
-			}
-		}
-		n := normalizeScalarForCompare(raw)
-		return n, fingerprint64(n)
-	}
-
-	// 大文件时并行算 diff，但保持输出顺序完全确定（按 common 的排序顺序收敛）。
-	// 阈值：避免小文件 goroutine/调度开销反而变慢。
-	shouldParallel := len(common) >= 2000 && len(orderedCols) >= 20
-	results := make([]diffResult, len(common))
-
-	work := func(idx int, cache *normCache) {
-		k := common[idx]
-		r1 := m1[k]
-		r2 := m2[k]
-		hasDiff := false
-		maskWords := diffMaskWords(len(orderedCols))
-		mask := make([]uint64, maskWords)
-		for i := 0; i < len(orderedCols); i++ {
-			i1 := colIdx1[i]
-			i2 := colIdx2[i]
-			var v1, v2 string
-			if i1 >= 0 && i1 < len(r1) {
-				v1 = r1[i1]
-			}
-			if i2 >= 0 && i2 < len(r2) {
-				v2 = r2[i2]
-			}
-
-			n1, h1 := cachedNormalizeFP(cache, v1)
-			n2, h2 := cachedNormalizeFP(cache, v2)
-			isDiff := false
-			if h1 != h2 {
-				isDiff = true
-			} else if n1 != n2 {
-				// hash collision fallback (keep exact semantics)
-				isDiff = true
-			}
-			if isDiff {
-				hasDiff = true
-				diffMaskSet(mask, i)
-			}
-		}
-		results[idx] = diffResult{hasDiff: hasDiff, mask: mask}
-	}
-
-	if shouldParallel {
-		workers := runtime.GOMAXPROCS(0)
-		if workers < 2 {
-			workers = 2
-		}
-		if workers > len(common) {
-			workers = len(common)
-		}
-		ch := make(chan int, workers*2)
-		var wg sync.WaitGroup
-		wg.Add(workers)
-		for w := 0; w < workers; w++ {
-			go func() {
-				defer wg.Done()
-				localCache := newNormCache(80000)
-				for idx := range ch {
-					work(idx, localCache)
-				}
-			}()
-		}
-		for i := 0; i < len(common); i++ {
-			ch <- i
-		}
-		close(ch)
-		wg.Wait()
-	} else {
-		cache := newNormCache(80000)
-		for i := 0; i < len(common); i++ {
-			work(i, cache)
-		}
-	}
-
-	for i, k := range common {
-		r := results[i]
-		if !r.hasDiff {
-			continue
-		}
-		art.DiffKeys = append(art.DiffKeys, k)
-		art.DiffMask[k] = r.mask
-	}
 	return art, nil
 }
 

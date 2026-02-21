@@ -65,10 +65,10 @@ func GenerateCompareExportXLSX(file1Path, file2Path, file1Name, file2Name, outPa
 		Font: &excelize.Font{Color: "9C0006"},
 	})
 
-	if err := writeSimpleTableSheetStream(f, incName, art.Increased, "无增加项"); err != nil {
+	if err := writeSimpleKeyedSheetStream(f, incName, art.IncHeaders, art.IncKeys, art.RightByKey, "无增加项"); err != nil {
 		return err
 	}
-	if err := writeSimpleTableSheetStream(f, redName, art.Reduced, "无减少项"); err != nil {
+	if err := writeSimpleKeyedSheetStream(f, redName, art.RedHeaders, art.ReducedKeys, art.LeftByKey, "无减少项"); err != nil {
 		return err
 	}
 	if err := writeDiffSideBySideStream(f, diffName, art, file1Name, file2Name, redStyle); err != nil {
@@ -133,13 +133,56 @@ func writeSimpleTableSheetStream(f *excelize.File, sheet string, tbl *Table, emp
 	return sw.Flush()
 }
 
+func writeSimpleKeyedSheetStream(f *excelize.File, sheet string, headers []string, keys []string, byKey map[string][]string, emptyMsg string) error {
+	sw, err := f.NewStreamWriter(sheet)
+	if err != nil {
+		return err
+	}
+	rowNum := 1
+	if len(headers) == 0 || len(keys) == 0 || byKey == nil {
+		if err := sw.SetRow("A1", []interface{}{emptyMsg}); err != nil {
+			return err
+		}
+		return sw.Flush()
+	}
+	// header
+	headerRow := make([]interface{}, len(headers))
+	for i, h := range headers {
+		headerRow[i] = h
+	}
+	if err := sw.SetRow(cellAxis(rowNum, 1), headerRow); err != nil {
+		return err
+	}
+	rowNum++
+
+	row := make([]interface{}, len(headers))
+	for _, k := range keys {
+		r, ok := byKey[k]
+		if !ok {
+			continue
+		}
+		for i := 0; i < len(headers); i++ {
+			if i < len(r) {
+				row[i] = safeCellValue(r[i])
+			} else {
+				row[i] = ""
+			}
+		}
+		if err := sw.SetRow(cellAxis(rowNum, 1), row); err != nil {
+			return err
+		}
+		rowNum++
+	}
+	return sw.Flush()
+}
+
 func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, file1Name, file2Name string, redStyle int) error {
 	sw, err := f.NewStreamWriter(sheet)
 	if err != nil {
 		return err
 	}
 	rowNum := 1
-	if art == nil || len(art.DiffKeys) == 0 {
+	if art == nil || len(art.CommonKeys) == 0 {
 		if err := sw.SetRow("A1", []interface{}{"无变动项目"}); err != nil {
 			return err
 		}
@@ -155,24 +198,117 @@ func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, f
 		fn2 = "文件2"
 	}
 
-	// header: [key, col1(file1), col1(file2), ...]
-	header := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
-	header = append(header, art.Key)
-	for _, c := range art.OrderedCols {
-		header = append(header, fmt.Sprintf("%s（%s）", c, fn1))
-		header = append(header, fmt.Sprintf("%s（%s）", c, fn2))
+	type normFP struct {
+		norm string
+		fp   uint64
 	}
-	if err := sw.SetRow(cellAxis(rowNum, 1), header); err != nil {
-		return err
+	type normCache struct {
+		m   map[string]normFP
+		max int
 	}
-	rowNum++
+	cache := &normCache{m: make(map[string]normFP, 2048), max: 80000}
+	cachedNormalizeFP := func(raw string) (string, uint64) {
+		if len(raw) <= 64 {
+			if v, ok := cache.m[raw]; ok {
+				return v.norm, v.fp
+			}
+			n := normalizeScalarForCompare(raw)
+			fp := fingerprint64(n)
+			if len(cache.m) < cache.max {
+				cache.m[raw] = normFP{norm: n, fp: fp}
+			}
+			return n, fp
+		}
+		n := normalizeScalarForCompare(raw)
+		return n, fingerprint64(n)
+	}
 
-	for _, k := range art.DiffKeys {
-		row := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
-		row = append(row, safeCellValue(k))
+	words := diffMaskWords(len(art.OrderedCols))
+	mask := make([]uint64, words)
+	dirty := make([]int, 0, 64)
+	setDiff := func(i int) {
+		if i < 0 {
+			return
+		}
+		w := i >> 6
+		if w < 0 || w >= len(mask) {
+			return
+		}
+		before := mask[w]
+		mask[w] |= 1 << uint(i&63)
+		if before == 0 {
+			dirty = append(dirty, w)
+		}
+	}
+	resetMask := func() {
+		for _, w := range dirty {
+			mask[w] = 0
+		}
+		dirty = dirty[:0]
+	}
+
+	firstWritten := false
+	writeHeader := func() error {
+		// header: [key, col1(file1), col1(file2), ...]
+		header := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
+		header = append(header, art.Key)
+		for _, c := range art.OrderedCols {
+			header = append(header, fmt.Sprintf("%s（%s）", c, fn1))
+			header = append(header, fmt.Sprintf("%s（%s）", c, fn2))
+		}
+		return sw.SetRow(cellAxis(rowNum, 1), header)
+	}
+
+	for _, k := range art.CommonKeys {
 		left := art.LeftByKey[k]
 		right := art.RightByKey[k]
-		mask := art.DiffMask[k]
+		hasDiff := false
+		for i := 0; i < len(art.OrderedCols); i++ {
+			i1 := -1
+			i2 := -1
+			if i < len(art.ColIdx1) {
+				i1 = art.ColIdx1[i]
+			}
+			if i < len(art.ColIdx2) {
+				i2 = art.ColIdx2[i]
+			}
+			va := ""
+			vb := ""
+			if i1 >= 0 && i1 < len(left) {
+				va = left[i1]
+			}
+			if i2 >= 0 && i2 < len(right) {
+				vb = right[i2]
+			}
+			n1, h1 := cachedNormalizeFP(va)
+			n2, h2 := cachedNormalizeFP(vb)
+			isDiff := false
+			if h1 != h2 {
+				isDiff = true
+			} else if n1 != n2 {
+				isDiff = true
+			}
+			if isDiff {
+				hasDiff = true
+				setDiff(i)
+			}
+		}
+		if !hasDiff {
+			resetMask()
+			continue
+		}
+
+		if !firstWritten {
+			if err := writeHeader(); err != nil {
+				return err
+			}
+			rowNum++
+			firstWritten = true
+		}
+
+		row := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
+		row = append(row, safeCellValue(k))
+		// build row cells using computed diff bitset
 		for i := 0; i < len(art.OrderedCols); i++ {
 			i1 := -1
 			i2 := -1
@@ -204,6 +340,12 @@ func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, f
 			return err
 		}
 		rowNum++
+		resetMask()
+	}
+	if !firstWritten {
+		if err := sw.SetRow("A1", []interface{}{"无变动项目"}); err != nil {
+			return err
+		}
 	}
 	return sw.Flush()
 }
