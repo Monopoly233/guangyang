@@ -99,9 +99,14 @@ type Artifacts struct {
 
 	// Only differing keys (normalized key as string)
 	DiffKeys  []string
-	LeftRows  map[string][]string // key -> values aligned with OrderedCols
-	RightRows map[string][]string // key -> values aligned with OrderedCols
-	DiffMask  map[string][]uint64 // key -> bitset aligned with OrderedCols
+	// Instead of materializing aligned rows (huge allocations), we keep references
+	// to the original key->row maps and column index mapping for export-time access.
+	LeftByKey  map[string][]string // key -> original row values (file1 headers order)
+	RightByKey map[string][]string // key -> original row values (file2 headers order)
+	ColIdx1    []int               // aligned with OrderedCols: index into file1 row (or -1)
+	ColIdx2    []int               // aligned with OrderedCols: index into file2 row (or -1)
+
+	DiffMask map[string][]uint64 // key -> bitset aligned with OrderedCols
 }
 
 func CompareArtifacts(file1, file2 *Table, key string) (*Artifacts, error) {
@@ -171,8 +176,10 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		Increased:   increased,
 		OrderedCols: orderedCols,
 		DiffKeys:    nil,
-		LeftRows:    map[string][]string{},
-		RightRows:   map[string][]string{},
+		LeftByKey:   m1,
+		RightByKey:  m2,
+		ColIdx1:     colIdx1,
+		ColIdx2:     colIdx2,
 		DiffMask:    map[string][]uint64{},
 	}
 
@@ -182,9 +189,40 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 
 	type diffResult struct {
 		hasDiff bool
-		left    []string
-		right   []string
 		mask    []uint64
+	}
+
+	type normFP struct {
+		norm string
+		fp   uint64
+	}
+	type normCache struct {
+		m   map[string]normFP
+		max int
+	}
+	newNormCache := func(max int) *normCache {
+		if max <= 0 {
+			max = 50000
+		}
+		return &normCache{m: make(map[string]normFP, 1024), max: max}
+	}
+	cachedNormalizeFP := func(cache *normCache, raw string) (string, uint64) {
+		// Only cache "small" strings to avoid blowing up memory on huge unique cells.
+		if cache != nil {
+			if len(raw) <= 64 {
+				if v, ok := cache.m[raw]; ok {
+					return v.norm, v.fp
+				}
+				n := normalizeScalarForCompare(raw)
+				fp := fingerprint64(n)
+				if len(cache.m) < cache.max {
+					cache.m[raw] = normFP{norm: n, fp: fp}
+				}
+				return n, fp
+			}
+		}
+		n := normalizeScalarForCompare(raw)
+		return n, fingerprint64(n)
 	}
 
 	// 大文件时并行算 diff，但保持输出顺序完全确定（按 common 的排序顺序收敛）。
@@ -192,13 +230,11 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 	shouldParallel := len(common) >= 2000 && len(orderedCols) >= 20
 	results := make([]diffResult, len(common))
 
-	work := func(idx int) {
+	work := func(idx int, cache *normCache) {
 		k := common[idx]
 		r1 := m1[k]
 		r2 := m2[k]
 		hasDiff := false
-		left := make([]string, len(orderedCols))
-		right := make([]string, len(orderedCols))
 		maskWords := diffMaskWords(len(orderedCols))
 		mask := make([]uint64, maskWords)
 		for i := 0; i < len(orderedCols); i++ {
@@ -211,13 +247,9 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 			if i2 >= 0 && i2 < len(r2) {
 				v2 = r2[i2]
 			}
-			left[i] = v1
-			right[i] = v2
 
-			n1 := normalizeScalarForCompare(v1)
-			n2 := normalizeScalarForCompare(v2)
-			h1 := fingerprint64(n1)
-			h2 := fingerprint64(n2)
+			n1, h1 := cachedNormalizeFP(cache, v1)
+			n2, h2 := cachedNormalizeFP(cache, v2)
 			isDiff := false
 			if h1 != h2 {
 				isDiff = true
@@ -230,7 +262,7 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 				diffMaskSet(mask, i)
 			}
 		}
-		results[idx] = diffResult{hasDiff: hasDiff, left: left, right: right, mask: mask}
+		results[idx] = diffResult{hasDiff: hasDiff, mask: mask}
 	}
 
 	if shouldParallel {
@@ -247,8 +279,9 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		for w := 0; w < workers; w++ {
 			go func() {
 				defer wg.Done()
+				localCache := newNormCache(80000)
 				for idx := range ch {
-					work(idx)
+					work(idx, localCache)
 				}
 			}()
 		}
@@ -258,8 +291,9 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 		close(ch)
 		wg.Wait()
 	} else {
+		cache := newNormCache(80000)
 		for i := 0; i < len(common); i++ {
-			work(i)
+			work(i, cache)
 		}
 	}
 
@@ -269,8 +303,6 @@ func compareArtifactsFromMaps(headers1, headers2 []string, m1, m2 map[string][]s
 			continue
 		}
 		art.DiffKeys = append(art.DiffKeys, k)
-		art.LeftRows[k] = r.left
-		art.RightRows[k] = r.right
 		art.DiffMask[k] = r.mask
 	}
 	return art, nil

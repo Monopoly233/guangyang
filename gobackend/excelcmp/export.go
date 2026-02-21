@@ -170,17 +170,25 @@ func writeDiffSideBySideStream(f *excelize.File, sheet string, art *Artifacts, f
 	for _, k := range art.DiffKeys {
 		row := make([]interface{}, 0, 1+len(art.OrderedCols)*2)
 		row = append(row, safeCellValue(k))
-		left := art.LeftRows[k]
-		right := art.RightRows[k]
+		left := art.LeftByKey[k]
+		right := art.RightByKey[k]
 		mask := art.DiffMask[k]
 		for i := 0; i < len(art.OrderedCols); i++ {
+			i1 := -1
+			i2 := -1
+			if i < len(art.ColIdx1) {
+				i1 = art.ColIdx1[i]
+			}
+			if i < len(art.ColIdx2) {
+				i2 = art.ColIdx2[i]
+			}
 			va := ""
 			vb := ""
-			if i < len(left) {
-				va = left[i]
+			if i1 >= 0 && i1 < len(left) {
+				va = left[i1]
 			}
-			if i < len(right) {
-				vb = right[i]
+			if i2 >= 0 && i2 < len(right) {
+				vb = right[i2]
 			}
 			isDiff := diffMaskGet(mask, i)
 
