@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -10,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"gobackend/compare"
+	"gobackend/obs"
 	"gobackend/ossstore"
 	"gobackend/redislock"
 	"gobackend/store"
@@ -20,6 +23,9 @@ import (
 )
 
 func main() {
+	shutdownObs, _ := obs.Init("compare-worker")
+	defer func() { _ = shutdownObs(context.Background()) }()
+
 	redisAddr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
 	if redisAddr == "" {
 		log.Fatalf("REDIS_ADDR 为空")
@@ -77,13 +83,33 @@ func main() {
 	cons.SetConcurrency(readEnvIntDefault("STREAM_CONCURRENCY", 4))
 	log.Printf("compare-worker start stream=%s group=%s consumer=%s", streamKey, group, consumerName)
 
+	go serveMetrics(readEnvDefault("METRICS_ADDR", ":9090"))
+
 	err = cons.ConsumeLoop(ctx, func(ctx context.Context, jobID string) error {
 		// handler should never crash the loop; all failures are persisted to job store.
-		return worker.Process(ctx, jobID)
+		start := time.Now()
+		err := worker.Process(ctx, jobID)
+		obs.RecordWorkerJob("compare-worker", start, err)
+		return err
 	})
 	if err != nil && err != context.Canceled {
 		log.Fatalf("consume loop exited: %v", err)
 	}
+}
+
+func serveMetrics(addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           obs.WrapHTTP("compare-worker-metrics", mux),
+		ReadHeaderTimeout: 3 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }
 
 func readEnvDefault(key, defaultVal string) string {

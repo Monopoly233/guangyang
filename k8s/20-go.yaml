@@ -22,6 +22,12 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            # Example: OTLP endpoint for tracing (otel-collector). Leave empty to disable.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
             - name: PORT
               value: "8080"
             - name: CORS_ALLOW_ORIGIN
@@ -198,7 +204,17 @@ spec:
           image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
           imagePullPolicy: Always
           command: ["/app/compare-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: METRICS_ADDR
+              value: ":9090"
             - name: STREAM_CONCURRENCY
               value: "4"
             - name: TMP_ROOT
@@ -301,6 +317,18 @@ spec:
                   name: wechatpay-env
                   key: WECHAT_MOCK
                   optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
           volumeMounts:
             - name: tmp
               mountPath: /app/tmp
@@ -355,7 +383,17 @@ spec:
           image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
           imagePullPolicy: Always
           command: ["/app/payment-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9090
           env:
+            # Observability
+            - name: LOG_LEVEL
+              value: "info"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: METRICS_ADDR
+              value: ":9090"
             - name: STREAM_CONCURRENCY
               value: "8"
             - name: REDIS_ADDR
@@ -418,6 +456,18 @@ spec:
                   name: wechatpay-env
                   key: WECHAT_MOCK
                   optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
           volumeMounts:
             - name: wechatpay-cert
               mountPath: /app/wechatpay/cert

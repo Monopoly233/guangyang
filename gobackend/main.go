@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,11 +17,13 @@ import (
 	"time"
 
 	"gobackend/compare"
+	"gobackend/obs"
 	"gobackend/ossstore"
 	"gobackend/store"
 	"gobackend/streamq"
 	"gobackend/wechat"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -115,8 +118,12 @@ func (s *memoryStore) balance() float64 {
 var billingStore = newMemoryStore()
 
 func main() {
+	shutdownObs, _ := obs.Init("go-api")
+	defer func() { _ = shutdownObs(context.Background()) }()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/profile", handleProfile)
 	mux.HandleFunc("/billing/pending", handleCreatePending)
 	mux.HandleFunc("/billing/deduct", handleDeduct)
@@ -158,7 +165,9 @@ func main() {
 
 	addr := ":" + readEnvDefault("PORT", "8080")
 	log.Printf("Go billing stub listening on %s", addr)
-	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil {
+	// Wrap order: cors -> otel/metrics -> mux
+	handler := corsMiddleware(obs.WrapHTTP("go-api", mux))
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }
