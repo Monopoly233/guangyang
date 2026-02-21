@@ -21,6 +21,8 @@ type Store struct {
 	uploadBucket *oss.Bucket
 	signBucket   *oss.Bucket
 
+	cred credentials.Credential
+
 	prefix     string
 	signExpiry time.Duration
 }
@@ -62,7 +64,7 @@ func NewFromEnv() (*Store, bool, error) {
 		expirySec = 600
 	}
 
-	cred, err := credentials.NewCredential(nil) // 支持：本地 AK、ACK RRSA(OIDC)、其他链路
+	cred, err := newAlibabaCredential(region) // 支持：本地 AK、ACK RRSA(OIDC)、其他链路
 	if err != nil {
 		return nil, true, fmt.Errorf("init alibaba credentials failed: %w", err)
 	}
@@ -95,9 +97,37 @@ func NewFromEnv() (*Store, bool, error) {
 		bucketName:   bucket,
 		uploadBucket: ub,
 		signBucket:   sb,
+		cred:         cred,
 		prefix:       prefix,
 		signExpiry:   time.Duration(expirySec) * time.Second,
 	}, true, nil
+}
+
+func newAlibabaCredential(region string) (credentials.Credential, error) {
+	// 当 RRSA 环境变量存在时，显式指定 OIDC 方式，并允许指定 STS endpoint，
+	// 以便在“无公网/NAT 异常”时更容易定位问题/切换到区域化 STS 域名。
+	roleArn := strings.TrimSpace(os.Getenv("ALIBABA_CLOUD_ROLE_ARN"))
+	providerArn := strings.TrimSpace(os.Getenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN"))
+	tokenFile := strings.TrimSpace(os.Getenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE"))
+	if roleArn != "" && providerArn != "" && tokenFile != "" {
+		cfg := new(credentials.Config).
+			SetType("oidc_role_arn").
+			SetRoleArn(roleArn).
+			SetOIDCProviderArn(providerArn).
+			SetOIDCTokenFilePath(tokenFile)
+
+		stsEndpoint := strings.TrimSpace(os.Getenv("ALIBABA_CLOUD_STS_ENDPOINT"))
+		if stsEndpoint == "" {
+			// 默认仍保持通用域名，但推荐你在生产设置为 sts.<region>.aliyuncs.com（例如 sts.cn-heyuan.aliyuncs.com）
+			stsEndpoint = "sts.aliyuncs.com"
+			if strings.TrimSpace(region) != "" {
+				stsEndpoint = "sts." + strings.TrimSpace(region) + ".aliyuncs.com"
+			}
+		}
+		cfg.SetSTSEndpoint(stsEndpoint)
+		return credentials.NewCredential(cfg)
+	}
+	return credentials.NewCredential(nil)
 }
 
 func validateAlibabaCredential(cred credentials.Credential) error {
@@ -106,7 +136,7 @@ func validateAlibabaCredential(cred credentials.Credential) error {
 	}
 	c, err := cred.GetCredential()
 	if err != nil {
-		return fmt.Errorf("获取阿里云临时凭证失败（检查 RRSA 是否注入）：%w", err)
+		return fmt.Errorf("获取阿里云临时凭证失败（检查 RRSA 注入/STS 连通性/NAT）：%w", err)
 	}
 	if c == nil || c.AccessKeyId == nil || c.AccessKeySecret == nil || strings.TrimSpace(*c.AccessKeyId) == "" || strings.TrimSpace(*c.AccessKeySecret) == "" {
 		return errors.New("阿里云凭证为空：很可能 RRSA 未注入。请检查 Pod 内是否存在 ALIBABA_CLOUD_ROLE_ARN / ALIBABA_CLOUD_OIDC_PROVIDER_ARN / ALIBABA_CLOUD_OIDC_TOKEN_FILE")
@@ -137,9 +167,20 @@ func (s *Store) ObjectKeyForJob(jobID string) string {
 	return path.Join(s.prefix, jobID, "compare.xlsx")
 }
 
+func (s *Store) ensureCred() error {
+	if s == nil || s.cred == nil {
+		return errors.New("阿里云凭证未初始化（RRSA/AK/STS 都不可用）")
+	}
+	// 这里主动触发一次刷新/校验，避免 OSS SDK 以“空 AK/SK”匿名请求打到 OSS，导致误导性的 bucket acl 403。
+	return validateAlibabaCredential(s.cred)
+}
+
 func (s *Store) PutResultFile(objectKey, localPath string) error {
 	if !s.Enabled() {
 		return errors.New("oss not enabled")
+	}
+	if err := s.ensureCred(); err != nil {
+		return err
 	}
 	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
 	localPath = strings.TrimSpace(localPath)
@@ -158,6 +199,9 @@ func (s *Store) GetObject(objectKey string) (io.ReadCloser, error) {
 	if !s.Enabled() {
 		return nil, errors.New("oss not enabled")
 	}
+	if err := s.ensureCred(); err != nil {
+		return nil, err
+	}
 	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
 	if objectKey == "" {
 		return nil, errors.New("objectKey empty")
@@ -169,6 +213,9 @@ func (s *Store) GetObject(objectKey string) (io.ReadCloser, error) {
 func (s *Store) SignDownloadURL(objectKey, downloadFilename string) (string, error) {
 	if !s.Enabled() {
 		return "", errors.New("oss not enabled")
+	}
+	if err := s.ensureCred(); err != nil {
+		return "", err
 	}
 	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
 	if objectKey == "" {
@@ -245,4 +292,3 @@ func readEnvInt64Default(key string, def int64) int64 {
 	}
 	return n
 }
-
