@@ -13,6 +13,7 @@ class ComparePage extends React.Component {
       file1: null,
       file2: null,
       loading: false,
+      startLocked: false,
       error: undefined,
       jobId: undefined,
       jobStatus: undefined,
@@ -73,13 +74,21 @@ class ComparePage extends React.Component {
     this.stopPolling();
 
     if (!jobId) {
-      this.setState({ jobStatus: "cancelled", error: "订单已取消" });
+      this.setState({ jobStatus: "cancelled", startLocked: false, error: "订单已取消" });
       return;
     }
 
     try {
       await cancelCompareJob(jobId);
-      this.setState({ jobStatus: "cancelled", showPayModal: false, error: "订单已取消" });
+      this.setState({
+        jobStatus: "cancelled",
+        showPayModal: false,
+        startLocked: false,
+        error: "订单已取消",
+        codeUrl: undefined,
+        qrDataUrl: undefined,
+        qrError: undefined,
+      });
     } catch (err) {
       // If cancel failed, resume polling to keep UX consistent.
       this.setState({ error: err?.message || "取消失败，已恢复轮询" });
@@ -119,20 +128,26 @@ class ComparePage extends React.Component {
 
         if (status === "failed") {
           this.stopPolling();
-          this.setState({ loading: false, error: j?.error || "任务失败" });
+          this.setState({ loading: false, startLocked: false, error: j?.error || "任务失败" });
           return;
         }
 
         if (status === "cancelled") {
           this.stopPolling();
-          this.setState({ loading: false, showPayModal: false, error: "订单已取消" });
+          this.setState({ loading: false, startLocked: false, showPayModal: false, error: "订单已取消" });
           return;
         }
 
         if (status === "ready") {
           this.stopPolling();
           this.setState({ showPayModal: false });
-          await this.fetchAndPreview(jobId);
+          try {
+            await this.fetchAndPreview(jobId);
+          } catch (err) {
+            this.setState({ error: err?.message || "获取结果失败" });
+          } finally {
+            this.setState({ startLocked: false });
+          }
           return;
         }
 
@@ -236,10 +251,12 @@ class ComparePage extends React.Component {
             <div className="compare-actions">
               <button onClick={async (e) => {
                 e.preventDefault();
+                if (this.state.startLocked) return;
                 if (!this.state.file1 || !this.state.file2) { this.setState({ error: "请先选择两个Excel文件" }); return; }
                 try {
                   this.setState({
                     loading: true,
+                    startLocked: true,
                     error: undefined,
                     previewSheets: [],
                     lastExport: null,
@@ -247,6 +264,8 @@ class ComparePage extends React.Component {
                     jobStatus: "processing",
                     showPayModal: false,
                     codeUrl: undefined,
+                    qrDataUrl: undefined,
+                    qrError: undefined,
                   });
 
                   const job = await createCompareJob(this.state.file1, this.state.file2);
@@ -255,12 +274,14 @@ class ComparePage extends React.Component {
                   this.setState({ jobId, jobStatus: job?.status || "processing" });
                   this.startPolling(jobId);
                 } catch (err) {
-                  this.setState({ error: err.message });
+                  this.setState({ startLocked: false, error: err.message });
                 } finally {
                   // loading 由轮询/下载阶段驱动
                   this.setState({ loading: false });
                 }
-              }} disabled={this.state.loading}>{this.state.loading ? "处理中..." : "开始比对"}</button>
+              }} disabled={this.state.loading || this.state.startLocked}>
+                {this.state.loading || this.state.startLocked ? "进行中..." : "开始比对"}
+              </button>
               <button onClick={(e) => {
                 e.preventDefault();
                 const le = this.state.lastExport;
@@ -301,29 +322,15 @@ class ComparePage extends React.Component {
                       <img className="pay-modal__qr" src={this.state.qrDataUrl} alt="微信支付二维码" />
                     ) : (
                       <div className="pay-modal__qrPlaceholder">
-                        {this.state.codeUrl ? (this.state.qrError ? this.state.qrError : "正在生成二维码...") : "等待后端返回 code_url..."}
+                        {this.state.codeUrl ? (this.state.qrError ? this.state.qrError : "正在生成二维码...") : "等待后端返回二维码信息..."}
                       </div>
                     )}
                   </div>
-                  <div className="pay-modal__codePane">
-                    <div className="pay-modal__codeLabel">code_url（用于生成二维码）</div>
-                    <pre className="pay-modal__codeValue">{this.state.codeUrl || "(等待后端返回 code_url...)"}</pre>
-                    <div className="pay-modal__actions">
-                      <button
-                        onClick={async (e) => {
-                          e.preventDefault();
-                          if (!this.state.codeUrl) return;
-                          try { await navigator.clipboard.writeText(this.state.codeUrl); } catch (_) {}
-                        }}
-                        disabled={!this.state.codeUrl}
-                      >
-                        复制 code_url
-                      </button>
-                      <button onClick={(e) => { e.preventDefault(); this.cancelPayment(); }}>
-                        关闭
-                      </button>
-                    </div>
-                  </div>
+                </div>
+                <div className="pay-modal__actions">
+                  <button onClick={(e) => { e.preventDefault(); this.cancelPayment(); }}>
+                    取消并关闭
+                  </button>
                 </div>
               </div>
             </div>
