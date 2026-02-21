@@ -1,6 +1,6 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
-
+//
 // Usage:
 //   k6 run -e BASE_URL=https://api.guangyang.online -e FILE1=/path/a.xlsx -e FILE2=/path/b.xlsx loadtest/k6_compare.js
 //

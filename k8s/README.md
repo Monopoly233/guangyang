@@ -77,4 +77,5 @@ curl -sS http://127.0.0.1:18080/healthz
      - 配置 `WECHAT_PLATFORM_PUBLIC_KEY`（以及对应的 `WECHAT_PLATFORM_PUBLIC_KEY_ID`）
 3. 确保回调域名路由到 Go：
    - `https://pay.guangyang.online/wechatpay/notify` → Ingress 已配置到 `svc/go:8080`
+   
 
