@@ -30,6 +30,7 @@ func Init(serviceName string) (Shutdown, *slog.Logger) {
 
 	logger := newJSONLogger(serviceName)
 	slog.SetDefault(logger)
+	SetAppInfo(serviceName)
 
 	shutdownTrace, err := initTracing(serviceName)
 	if err != nil {

@@ -2,13 +2,25 @@ package obs
 
 import (
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
+	appInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "gy",
+			Subsystem: "app",
+			Name:      "info",
+			Help:      "Static app info for deployment verification.",
+		},
+		[]string{"service", "version"},
+	)
+
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "gy",
@@ -51,7 +63,19 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(httpRequestsTotal, httpRequestDuration, workerJobsTotal, workerJobDuration)
+	prometheus.MustRegister(appInfo, httpRequestsTotal, httpRequestDuration, workerJobsTotal, workerJobDuration)
+}
+
+func SetAppInfo(service string) {
+	svc := strings.TrimSpace(service)
+	if svc == "" {
+		svc = "gobackend"
+	}
+	ver := strings.TrimSpace(os.Getenv("APP_VERSION"))
+	if ver == "" {
+		ver = "dev"
+	}
+	appInfo.WithLabelValues(svc, ver).Set(1)
 }
 
 // MetricsMiddleware records request count/latency.
@@ -67,7 +91,7 @@ func MetricsMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, code: 200}
 		next.ServeHTTP(rec, r)
-		route := r.URL.Path
+		route := normalizeRouteLabel(r.URL.Path)
 		code := strconv.Itoa(rec.code)
 		httpRequestsTotal.WithLabelValues(r.Method, route, code).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
@@ -91,5 +115,34 @@ func RecordWorkerJob(worker string, start time.Time, err error) {
 	}
 	workerJobsTotal.WithLabelValues(worker, res).Inc()
 	workerJobDuration.WithLabelValues(worker).Observe(time.Since(start).Seconds())
+}
+
+func normalizeRouteLabel(path string) string {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return "/"
+	}
+	// Reduce cardinality for jobId routes.
+	// /compare/jobs/{jobId}
+	// /compare/jobs/{jobId}/export
+	// /compare/jobs/{jobId}/cancel
+	if strings.HasPrefix(p, "/compare/jobs/") {
+		rest := strings.TrimPrefix(p, "/compare/jobs/")
+		parts := strings.Split(rest, "/")
+		if len(parts) == 1 {
+			return "/compare/jobs/:jobId"
+		}
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "export":
+				return "/compare/jobs/:jobId/export"
+			case "cancel":
+				return "/compare/jobs/:jobId/cancel"
+			default:
+				return "/compare/jobs/:jobId/" + parts[1]
+			}
+		}
+	}
+	return p
 }
 
