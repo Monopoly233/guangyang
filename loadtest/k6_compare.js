@@ -60,7 +60,7 @@ export default function () {
   const f2 = open(FILE2, "b");
 
   const job = createJob(f1, f2);
-  const jobId = job?.jobId;
+  const jobId = job&& job.jobId;
   if (!jobId) {
     sleep(1);
     return;
@@ -70,7 +70,7 @@ export default function () {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const j = getJob(jobId);
-    const st = j?.status;
+    const st = j&& j.status;
     if (st === "ready") {
       downloadExport(jobId);
       break;
