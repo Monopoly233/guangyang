@@ -21,14 +21,14 @@ spec:
           initContainers:
             - name: fetch-files
               # 用你自己的 ACR 镜像（集群已在用，避免拉 DockerHub 失败）
-              image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+              image: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/go:latest
               imagePullPolicy: IfNotPresent
               env:
                 # 需要你提供可下载的 URL（推荐 OSS 签名 URL，expire 设久一点）
                 - name: FILE1_URL
-                  value: "https://guangyangoss.oss-cn-heyuan.aliyuncs.com/01.xlsx?Expires=1771689531&OSSAccessKeyId=TMP.3Kqz47CoLVGyqEkANTEvVb1Z2rvwT9kY1sYwkgu2B3gTxTLWrmCLYKtC6bCFhgbfXXrSS6pupeskLHtmL7dpCY7r6RHtvn&Signature=nCsdQkqT3cO1Tbggwzkty0q8YzA%3D"
+                  value: ""
                 - name: FILE2_URL
-                  value: "https://guangyangoss.oss-cn-heyuan.aliyuncs.com/02.xlsx?Expires=1771689531&OSSAccessKeyId=TMP.3Kqz47CoLVGyqEkANTEvVb1Z2rvwT9kY1sYwkgu2B3gTxTLWrmCLYKtC6bCFhgbfXXrSS6pupeskLHtmL7dpCY7r6RHtvn&Signature=63BF4j8AiOi0SqbDvr%2BfTul3SDw%3D"
+                  value: ""
               command:
                 - sh
                 - -lc
@@ -50,7 +50,7 @@ spec:
           containers:
             - name: k6
               # 不依赖 DockerHub：使用你 ACR 里的镜像（由 CI 同步）
-              image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/k6:0.51.0
+              image: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/k6:0.51.0
               imagePullPolicy: IfNotPresent
               args:
                 - run

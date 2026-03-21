@@ -1,26 +1,32 @@
-## 开发完成度（截至 2026 年 1 月 31 日）
+## 项目概览
 
-### 已完成
-- **后端（Go）**：实现一个计费/余额的内存版 stub 服务（`gobackend/main.go`）
-  - **健康检查**：`GET /healthz` 返回 `{"status":"ok"}`
-  - **用户信息/余额**：`GET /profile` 返回 demo user 与余额（余额为初始值减去累计扣费，保底不小于 0）
-  - **创建待扣费记录**：`POST /billing/pending`
-    - 支持传入/自动生成 `idempotencyKey`
-    - 同一 `idempotencyKey` 幂等返回
-  - **扣费**：`POST /billing/deduct`
-    - 按 `idempotencyKey` 幂等扣费（已扣过则直接返回）
-  - **CORS**：默认允许 `http://localhost:5173`（可通过 `CORS_ALLOW_ORIGIN` 配置）
-  - **端口**：默认 `8080`（可通过 `PORT` 配置）
+这是一套面向生产的 **异步 Excel 比对导出** 服务，重点在于：可扩展的任务队列、对象存储、支付闸门、可观测性与自动扩缩容。
 
-- **前端（React）**：实现基础页面切换（`frontend/src/App.tsx`）
-  - **Hash 路由**：通过 `window.location.hash` 在 `HomePage` 与 `ComparePage` 间切换（`#compare`）
+### 架构要点
+- **Go API（stateless）**：接收上传，把输入文件写入 OSS，创建 job 元数据（Redis），投递 Redis Streams。
+- **compare-worker（可水平扩容）**：消费 compare stream，从 OSS 拉取输入，必要时调用 `xlsconvert` 做 `.xls→.xlsx`，执行比对并导出结果，再上传 OSS。
+- **payment-worker（独立扩容域）**：消费 paygate stream，负责创建微信 Native Pay 订单/推进 job 状态机（把支付逻辑与重计算解耦）。
+- **存储与队列**：
+  - Redis：job 状态一致性（幂等更新） + Streams 队列
+  - OSS：输入/输出文件（结果用签名 URL 直下）
+- **可靠性设计**：
+  - Redis Streams consumer group + pending 自动认领
+  - 分布式锁（SETNX+TTL）避免多 worker 重复计算
+  - 失败策略：业务失败标记 job failed（不自动重试）
+- **可观测性**：
+  - JSON 结构化日志（slog）
+  - Prometheus metrics（`/metrics` + worker 独立 metrics server）
+  - OpenTelemetry tracing（OTLP，未配置 endpoint 时自动 no-op）
+- **性能优化（不改变输出语义）**：
+  - key->row streaming read、列索引 O(1)、diff 流式导出（StreamWriter）
+  - normalize 本地去重、按需写出减少内存峰值
 
 ---
 
 ## 本地开发快速开始
 
 ### 依赖（按 Dockerfile 口径）
-- **Go**：1.22+
+- **Go**：1.24+
 - **Node.js**：20+
 
 ### 方式 A：本机直接运行（开发调试）
@@ -58,11 +64,7 @@ docker compose up -d --build
 - **前端 Nginx**：`http://localhost:8088`
 - **Go**：由前端 Nginx 通过 `/api/` 反代
 
-如果需要注入生产环境变量（注意包含敏感信息，谨慎保管）：
-
-```bash
-docker compose --env-file env.prod up -d --build
-```
+注意：**不要把真实生产密钥放进仓库**。可以参考 `env.prod.example`，把真实 `env.prod` 放在本地磁盘并被 `.gitignore` 忽略。
 
 ## 接口速查（便于联调）
 
@@ -97,11 +99,6 @@ Go 服务除基础变量外，还支持微信支付相关配置（建议用 `.en
 
 ## GitLab CI 自动部署说明
 
-`.gitlab-ci.yml` 目前在 `main` 分支触发 `deploy`，核心命令为：
-- `docker compose -p gy up -d --build --remove-orphans`
-- `docker image prune -f`
-
-说明：
-- `-p gy` 固定 compose 项目名，便于和机器上其它 compose 项目隔离
-- 部署机需要已安装 Docker 与 docker compose，并且 runner 对 docker 有权限
-- none
+`.gitlab-ci.yml` 在 `main` 分支触发：
+- build/push：构建并推送 `web/go` 镜像到 ACR
+- deploy：`kubectl apply -f k8s/` + 固定使用本次 `IMAGE_TAG` 滚动部署

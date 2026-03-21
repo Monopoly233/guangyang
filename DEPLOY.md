@@ -23,7 +23,7 @@ docker compose up -d --build
 
 在服务器上准备一个目录（例如 `/opt/guagnyang`），放：
 - `docker-compose.prod.yml`
-- `.env`（环境变量文件；也可以继续用本仓库的 `env.prod`，启动时用 `--env-file` 指定）
+- `.env` 或 `env.prod`（环境变量文件：**请自行在服务器上创建，不要提交到 git**；可参考仓库中的 `env.prod.example`）
 - `wechatpay/`（证书与密钥目录，建议只放在服务器，不要提交到仓库）
 
 然后执行：

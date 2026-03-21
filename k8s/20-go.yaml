@@ -16,7 +16,7 @@ spec:
       serviceAccountName: go-sa
       containers:
         - name: go
-          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          image: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/go:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -201,7 +201,7 @@ spec:
       serviceAccountName: go-sa
       containers:
         - name: compare-worker
-          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          image: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/go:latest
           imagePullPolicy: Always
           command: ["/app/compare-worker"]
           ports:
@@ -380,7 +380,7 @@ spec:
       serviceAccountName: go-sa
       containers:
         - name: payment-worker
-          image: guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest
+          image: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/go:latest
           imagePullPolicy: Always
           command: ["/app/payment-worker"]
           ports:

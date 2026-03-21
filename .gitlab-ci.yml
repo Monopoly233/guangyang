@@ -6,14 +6,9 @@ variables:
   # 在 GitLab 项目 Settings -> CI/CD -> Variables 里配置：
   # - ACR_USERNAME / ACR_PASSWORD
   # 可按需覆盖 ACR_NAMESPACE / IMAGE_TAG
-  # 说明（非常关键）：
-  # - 你的 GitLab Runner ECS 当前在 VPC: vpc-f8z6hufc72u4capmua46n
-  # - 你的 ACK/ACR 专有网络在另一个 VPC（不同 VPC 下 ACR 的 *-vpc 域名不会解析）
-  # 因此：
-  # - CI 推镜像：建议开启 ACR「公网入口」并使用公网域名（本默认值）
-  # - ACK 拉镜像：后续部署到 K8s 时可继续用 *-vpc 内网域名（更快更稳）
-  ACR_REGISTRY: guangyang-registry.cn-heyuan.cr.aliyuncs.com
-  ACR_NAMESPACE: guangyang
+  # 个人版 ACR（公网）
+  ACR_REGISTRY: crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com
+  ACR_NAMESPACE: guangyang2
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
 
   # 0.01 元 = 1 分（可在 GitLab Variables 覆盖）
@@ -97,8 +92,7 @@ deploy_ack:
     - echo "======== (pre) 配置 ACR 拉取凭据 ========"
     - |
       # 为 namespace gy 配置 imagePullSecret，解决 ACR 私有仓库 ImagePullBackOff
-      # 注意：镜像地址使用 *-vpc 域名时，secret 的 docker-server 也必须一致
-      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      ACR_PULL_REGISTRY="$ACR_REGISTRY"
       if ! kubectl get ns gy >/dev/null 2>&1; then
         kubectl apply -f k8s/00-namespace.yaml
       fi
@@ -124,7 +118,7 @@ deploy_ack:
     - |
       # 避免依赖 latest 造成“拉到旧镜像/缓存镜像”导致行为不一致
       test -n "${IMAGE_TAG:-}"
-      ACR_PULL_REGISTRY="guangyang-registry-vpc.cn-heyuan.cr.aliyuncs.com"
+      ACR_PULL_REGISTRY="$ACR_REGISTRY"
       kubectl -n gy set image deploy/go go="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG"
       kubectl -n gy set image deploy/compare-worker compare-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true
       kubectl -n gy set image deploy/payment-worker payment-worker="$ACR_PULL_REGISTRY/$ACR_NAMESPACE/go:$IMAGE_TAG" >/dev/null 2>&1 || true

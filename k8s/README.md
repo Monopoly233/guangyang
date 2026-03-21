@@ -1,19 +1,21 @@
-## ACK 部署（最小可跑通版）
+## ACK 部署（投简历版：可观测 + 队列 + Worker 拆分）
 
-本目录把 `docker-compose.prod.yml` 的服务（web/go）平移成 Kubernetes 清单：
+本目录把服务拆成 **Go API + compare-worker + payment-worker + web + xlsconvert**，并提供 HPA 与压测模板。
 
 - `00-namespace.yaml`：namespace `gy`
-- `20-go.yaml`：Go API（Service: `go:8080`）
+- `20-go.yaml`：Go API（Service: `go:8080`）+ `compare-worker` + `payment-worker`
 - `30-web.yaml`：Nginx 静态站点（Service: `web:80`）
+- `30-hpa.yaml`：HPA（CPU utilization）
 - `40-albconfig-ingressclass.yaml`：复用现成 ALB 的 AlbConfig + IngressClass（名字：`gy-alb`）
 - `50-ingress.yaml`：ALB Ingress 规则（`api/pay/www` → `go/web`）
+- `40-k6-job.yaml`：k6 压测 CronJob（默认 suspend=true，手动触发）
 
 ### 前置条件
 
-1. 你已将镜像 push 到 ACR（至少有 `:latest`）：
+1. 你已将镜像 push 到 ACR（建议用 commit tag，不依赖 latest）：
 
-- `guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/web:latest`
-- `guangyang-registry.cn-heyuan.cr.aliyuncs.com/guangyang/go:latest`
+- `crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/web:latest`
+- `crpi-gig115w9rla7krj3.cn-heyuan.personal.cr.aliyuncs.com/guangyang2/go:latest`
 
 2. ACK 集群能拉取 ACR 私有镜像：
    - 如果你集群安装了 `managed-aliyun-acr-credential-helper` 并配置 OK，通常无需额外 secret。
@@ -57,8 +59,8 @@ curl -sS http://127.0.0.1:18080/healthz
 - Ingress：`gy/gy-ingress`
 
 注意：
-- `k8s/40-albconfig-ingressclass.yaml` 中写死了 ALB 实例 ID：`alb-r8l72kghnnh97b0epj`（如你更换 ALB，需要同步修改）
-- Ingress 已配置同时监听 80/443。你若使用 Cloudflare Full(strict)，请确保 ALB 已配置 443 监听与 Origin 证书。
+- `k8s/40-albconfig-ingressclass.yaml` 里有集群相关配置（如 ALB 实例 ID）。如果你复用到别的集群，请按实际环境调整。
+- Ingress 支持 80/443；如接入 CDN/代理，请确保回源 TLS 配置一致。
 
 ### 注意（微信回调）
 
@@ -76,6 +78,6 @@ curl -sS http://127.0.0.1:18080/healthz
      - `platform_cert.pem`（放入 `wechatpay-cert`），或
      - 配置 `WECHAT_PLATFORM_PUBLIC_KEY`（以及对应的 `WECHAT_PLATFORM_PUBLIC_KEY_ID`）
 3. 确保回调域名路由到 Go：
-   - `https://pay.guangyang.online/wechatpay/notify` → Ingress 已配置到 `svc/go:8080`
+   - `https://<your-domain>/wechatpay/notify` → Ingress 配置到 `svc/go:8080`
    
 
