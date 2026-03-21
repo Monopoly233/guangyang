@@ -1,0 +1,44 @@
+# xlsconvert（unoserver）：.xls → .xlsx 转换服务
+# 使用公共镜像，无需自建或推送到 ACR
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xlsconvert
+  namespace: gy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xlsconvert
+  template:
+    metadata:
+      labels:
+        app: xlsconvert
+    spec:
+      containers:
+        - name: xlsconvert
+          image: ghcr.io/unoconv/unoserver-docker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: uno
+              containerPort: 2003
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xlsconvert
+  namespace: gy
+spec:
+  selector:
+    app: xlsconvert
+  ports:
+    - name: uno
+      port: 2003
+      targetPort: uno
