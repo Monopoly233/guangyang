@@ -1,6 +1,6 @@
 variables:
   # Runner 和应用在同一台 GitLab 服务器上，保留运行时目录，避免清理证书/临时结果。
-  GIT_CLEAN_FLAGS: -ffdx -e tmp/ -e wechatpay/
+  GIT_CLEAN_FLAGS: -ffdx -e runtime/ -e tmp/ -e wechatpay/
   LOCAL_IMAGE_PREFIX: gy
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   COMPARE_JOB_FEE_FEN: "1"
