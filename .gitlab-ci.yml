@@ -5,7 +5,9 @@ variables:
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   COMPARE_JOB_FEE_FEN: "1"
   GY_DATA_DIR: "$CI_PROJECT_DIR/runtime"
-  WECHATPAY_DIR: "$CI_PROJECT_DIR/wechatpay"
+  # 证书目录由服务器管理员维护（root 创建并放置 cert.zip / pem 文件），
+  # gitlab-runner 用户不必有写权限，只要 docker daemon 能挂载即可。
+  WECHATPAY_DIR: "/opt/app/gy/wechatpay"
 
 stages:
   - deploy
@@ -21,7 +23,13 @@ deploy_single_host:
     - docker version
     - docker compose version
     - echo "======== [2/4] 准备单机持久化目录 ========"
-    - mkdir -p "$GY_DATA_DIR/tmp" "$GY_DATA_DIR/redis" "$WECHATPAY_DIR/cert" "$WECHATPAY_DIR/apikey"
+    - mkdir -p "$GY_DATA_DIR/tmp" "$GY_DATA_DIR/redis"
+    - |
+      if [ ! -d "$WECHATPAY_DIR/cert" ]; then
+        echo "WARN: $WECHATPAY_DIR/cert 不存在，微信支付下单会失败。请在服务器上以 root 准备 $WECHATPAY_DIR/{cert,apikey} 并放置证书。"
+      else
+        echo "wechatpay 目录存在: $(ls -1 $WECHATPAY_DIR/cert 2>/dev/null | wc -l) 个文件"
+      fi
     - echo "======== [3/4] 构建本机镜像 ========"
     - docker compose -f docker-compose.prod.yml build
     - echo "======== [4/4] 在本机启动/更新服务 ========"
