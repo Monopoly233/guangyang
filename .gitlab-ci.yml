@@ -5,6 +5,7 @@ variables:
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   COMPARE_JOB_FEE_FEN: "1"
   GY_DATA_DIR: "$CI_PROJECT_DIR/runtime"
+  WECHATPAY_DIR: "$CI_PROJECT_DIR/wechatpay"
 
 stages:
   - deploy
@@ -20,7 +21,7 @@ deploy_single_host:
     - docker version
     - docker compose version
     - echo "======== [2/4] 准备单机持久化目录 ========"
-    - mkdir -p "$GY_DATA_DIR/tmp" "$GY_DATA_DIR/redis" "$GY_DATA_DIR/wechatpay/cert"
+    - mkdir -p "$GY_DATA_DIR/tmp" "$GY_DATA_DIR/redis" "$WECHATPAY_DIR/cert" "$WECHATPAY_DIR/apikey"
     - echo "======== [3/4] 构建本机镜像 ========"
     - docker compose -f docker-compose.prod.yml build
     - echo "======== [4/4] 在本机启动/更新服务 ========"

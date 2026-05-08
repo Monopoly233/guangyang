@@ -66,8 +66,8 @@ services:
       - WECHAT_MOCK=${WECHAT_MOCK:-}
       - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
     volumes:
-      # 证书/密钥目录建议通过挂载或 secrets 注入
-      - ${GY_DATA_DIR:-./runtime}/wechatpay/cert:/app/wechatpay/cert:ro
+      # 微信支付证书/API key 独立挂载，避免被 runtime/ 清理或 Redis 权限影响。
+      - ${WECHATPAY_DIR:-./wechatpay}:/app/wechatpay:ro
       - ${GY_DATA_DIR:-./runtime}/tmp:/app/tmp
     depends_on:
       - redis
@@ -137,7 +137,7 @@ services:
       - WECHAT_MOCK=${WECHAT_MOCK:-}
       - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
     volumes:
-      - ${GY_DATA_DIR:-./runtime}/wechatpay/cert:/app/wechatpay/cert:ro
+      - ${WECHATPAY_DIR:-./wechatpay}:/app/wechatpay:ro
     depends_on:
       - redis
     networks:

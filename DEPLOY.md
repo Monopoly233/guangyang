@@ -32,7 +32,7 @@ docker compose --env-file env.prod -f docker-compose.prod.yml up -d --build
 Compose 会把运行时数据持久化在本机：
 - `${GY_DATA_DIR:-./runtime}/tmp`：上传文件和比对结果，下载不再跳 OSS 外链
 - `${GY_DATA_DIR:-./runtime}/redis`：Redis AOF 数据
-- `${GY_DATA_DIR:-./runtime}/wechatpay/cert`：微信支付证书/私钥
+- `${WECHATPAY_DIR:-./wechatpay}`：微信支付证书、私钥和 apikey（目录下包含 `cert/`、`apikey/`）
 
 GitLab CI 默认会把 `GY_DATA_DIR` 设为 `$CI_PROJECT_DIR/runtime`，不需要 runner 用户拥有 `/opt` 写权限。如果你已经给 runner 用户授权，也可以在 CI/CD Variables 里把 `GY_DATA_DIR` 改成 `/opt/app/gy`。
 
@@ -87,6 +87,7 @@ Go 端会从挂载的 `wechatpay/` 目录读取：
 - `wechatpay/cert/merchant_key.pem`
 - `wechatpay/cert/merchant_cert.pem`
 - `wechatpay/cert/platform_cert.pem`
+- `wechatpay/apikey/apikey.txt`（如果没有用环境变量注入 `WECHAT_API_V3_KEY`）
 
 注意：你目前仓库里是 `cert.zip`，需要在服务器上解压/导出成上述 pem 文件名。
 

@@ -32,7 +32,7 @@ On the server, prepare a directory (e.g. `/opt/guagnyang`) with:
 Runtime data is kept on the same server:
 - `${GY_DATA_DIR:-./runtime}/tmp`: uploaded files and export results; downloads no longer redirect to OSS
 - `${GY_DATA_DIR:-./runtime}/redis`: Redis AOF data
-- `${GY_DATA_DIR:-./runtime}/wechatpay/cert`: WeChatPay certs/keys
+- `${WECHATPAY_DIR:-./wechatpay}`: WeChatPay certs/keys and apikey files (`cert/` and `apikey/`)
 
 GitLab CI sets `GY_DATA_DIR` to `$CI_PROJECT_DIR/runtime` by default, so the runner does not need write access to `/opt`. If you grant that permission later, override `GY_DATA_DIR` to `/opt/app/gy` in CI/CD variables.
 
@@ -77,7 +77,7 @@ WeChat config (recommended as masked/protected vars):
 
 ### 5) WeChat cert/key material
 
-For single-host deployment, put cert/key files on the server under `${GY_DATA_DIR:-./runtime}/wechatpay/cert`, mounted into containers at `/app/wechatpay/cert`.
+For single-host deployment, put cert/key files on the server under `${WECHATPAY_DIR:-./wechatpay}/cert`, mounted into containers at `/app/wechatpay/cert`. If you use file-based API v3 key fallback, put it under `${WECHATPAY_DIR:-./wechatpay}/apikey/apikey.txt`.
 
 Do **not** commit any real keys/certs to git.
 
