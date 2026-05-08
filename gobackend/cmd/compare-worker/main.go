@@ -50,7 +50,7 @@ func main() {
 		ossSt = st
 		log.Printf("oss store enabled bucket=%s prefix=%s", strings.TrimSpace(os.Getenv("OSS_BUCKET")), strings.TrimSpace(os.Getenv("OSS_PREFIX")))
 	} else {
-		log.Fatalf("OSS 未启用：worker 无法处理输入/输出文件")
+		log.Printf("oss store disabled: compare-worker will use shared local TMP_ROOT")
 	}
 
 	streamKey := readEnvDefault("COMPARE_STREAM_KEY", "gy:comparejobs:stream")
@@ -148,4 +148,3 @@ func signalContext() (context.Context, context.CancelFunc) {
 	}()
 	return ctx, cancel
 }
-
