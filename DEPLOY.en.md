@@ -36,7 +36,17 @@ Runtime data is kept on the same server:
 
 GitLab CI sets `GY_DATA_DIR` to `$CI_PROJECT_DIR/runtime` by default, so the runner does not need write access to `/opt`. If you grant that permission later, override `GY_DATA_DIR` to `/opt/app/gy` in CI/CD variables.
 
-The frontend binds to host port `8088` by default to avoid conflicts with GitLab/Nginx already using port `80`. Set `WEB_PORT=80` only after confirming that port is free.
+The frontend binds to `127.0.0.1:8088` by default to avoid conflicts with GitLab/Nginx already using port `80`. Public traffic should enter through host Nginx/Cloudflare on 80/443, then proxy to `127.0.0.1:8088`.
+
+A host Nginx template is provided:
+
+```bash
+sudo cp deploy/nginx-guangyang.conf /etc/nginx/conf.d/guangyang.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+If the server already has a `guangyang.online` server block, change its upstream/proxy target to `http://127.0.0.1:8088`; do not leave it pointing at the old ACK/ALB or a missing local port.
 
 Start:
 

@@ -36,7 +36,17 @@ Compose 会把运行时数据持久化在本机：
 
 GitLab CI 默认会把 `GY_DATA_DIR` 设为 `$CI_PROJECT_DIR/runtime`，不需要 runner 用户拥有 `/opt` 写权限。如果你已经给 runner 用户授权，也可以在 CI/CD Variables 里把 `GY_DATA_DIR` 改成 `/opt/app/gy`。
 
-前端默认监听宿主机 `8088`，避免和 GitLab/Nginx 已占用的 `80` 冲突。如需直接占用 80，可以在确认端口空闲后设置 `WEB_PORT=80`。
+前端默认只监听宿主机 `127.0.0.1:8088`，避免和 GitLab/Nginx 已占用的 `80` 冲突。公网域名入口应由宿主机 Nginx/Cloudflare 回源到 80/443，再反代到 `127.0.0.1:8088`。
+
+仓库提供了宿主机 Nginx 模板：
+
+```bash
+sudo cp deploy/nginx-guangyang.conf /etc/nginx/conf.d/guangyang.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+如果服务器已经有 `guangyang.online` 的 Nginx server block，请把其中的 upstream/proxy 改成 `http://127.0.0.1:8088`，不要再指向旧 ACK/ALB 或不存在的本地端口。
 
 然后执行：
 
