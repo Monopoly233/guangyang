@@ -48,6 +48,8 @@ sudo systemctl reload nginx
 
 If the server already has a `guangyang.online` server block, change its upstream/proxy target to `http://127.0.0.1:8088`; do not leave it pointing at the old ACK/ALB or a missing local port.
 
+For large uploads, host Nginx `client_max_body_size` must also be high enough. The template uses `512m`, and Go defaults to `COMPARE_MAX_UPLOAD_MB=512`; keep both values in sync if you raise the limit.
+
 Start:
 
 ```bash

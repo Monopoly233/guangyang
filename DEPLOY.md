@@ -48,6 +48,8 @@ sudo systemctl reload nginx
 
 如果服务器已经有 `guangyang.online` 的 Nginx server block，请把其中的 upstream/proxy 改成 `http://127.0.0.1:8088`，不要再指向旧 ACK/ALB 或不存在的本地端口。
 
+上传大文件时，宿主机 Nginx 的 `client_max_body_size` 也要足够大。模板已设为 `512m`，并且 Go 服务默认 `COMPARE_MAX_UPLOAD_MB=512`；如果你改大其中一个，请两个一起改。
+
 然后执行：
 
 ```bash
