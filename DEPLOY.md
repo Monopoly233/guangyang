@@ -36,6 +36,8 @@ Compose 会把运行时数据持久化在本机：
 
 GitLab CI 默认会把 `GY_DATA_DIR` 设为 `$CI_PROJECT_DIR/runtime`，不需要 runner 用户拥有 `/opt` 写权限。如果你已经给 runner 用户授权，也可以在 CI/CD Variables 里把 `GY_DATA_DIR` 改成 `/opt/app/gy`。
 
+前端默认监听宿主机 `8088`，避免和 GitLab/Nginx 已占用的 `80` 冲突。如需直接占用 80，可以在确认端口空闲后设置 `WEB_PORT=80`。
+
 然后执行：
 
 ```bash

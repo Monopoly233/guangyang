@@ -36,6 +36,8 @@ Runtime data is kept on the same server:
 
 GitLab CI sets `GY_DATA_DIR` to `$CI_PROJECT_DIR/runtime` by default, so the runner does not need write access to `/opt`. If you grant that permission later, override `GY_DATA_DIR` to `/opt/app/gy` in CI/CD variables.
 
+The frontend binds to host port `8088` by default to avoid conflicts with GitLab/Nginx already using port `80`. Set `WEB_PORT=80` only after confirming that port is free.
+
 Start:
 
 ```bash
