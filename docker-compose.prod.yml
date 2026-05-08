@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - /opt/app/gy/redis:/data
+      - ${GY_DATA_DIR:-./runtime}/redis:/data
     networks:
       - appnet
 
@@ -46,6 +46,7 @@ services:
       - COMPARE_STREAM_GROUP=${COMPARE_STREAM_GROUP:-gy-compare}
       - COMPARE_STREAM_MAXLEN=${COMPARE_STREAM_MAXLEN:-100000}
       - COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-1}
+      - COMPARE_TMP_RETENTION_MINUTES=${COMPARE_TMP_RETENTION_MINUTES:-30}
       - XLSCONVERT_HOST=xlsconvert
       - XLSCONVERT_PORT=2003
       - XLSCONVERT_PROTOCOL=http
@@ -65,8 +66,8 @@ services:
       - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
     volumes:
       # 证书/密钥目录建议通过挂载或 secrets 注入
-      - /opt/app/gy/wechatpay/cert:/app/wechatpay/cert:ro
-      - /opt/app/gy/tmp:/app/tmp
+      - ${GY_DATA_DIR:-./runtime}/wechatpay/cert:/app/wechatpay/cert:ro
+      - ${GY_DATA_DIR:-./runtime}/tmp:/app/tmp
     depends_on:
       - redis
       - xlsconvert
@@ -101,7 +102,7 @@ services:
       - XLSCONVERT_TIMEOUT_SECONDS=${XLSCONVERT_TIMEOUT_SECONDS:-90}
       - OSS_BUCKET=${OSS_BUCKET:-}
     volumes:
-      - /opt/app/gy/tmp:/app/tmp
+      - ${GY_DATA_DIR:-./runtime}/tmp:/app/tmp
     depends_on:
       - redis
       - xlsconvert
@@ -135,7 +136,7 @@ services:
       - WECHAT_MOCK=${WECHAT_MOCK:-}
       - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
     volumes:
-      - /opt/app/gy/wechatpay/cert:/app/wechatpay/cert:ro
+      - ${GY_DATA_DIR:-./runtime}/wechatpay/cert:/app/wechatpay/cert:ro
     depends_on:
       - redis
     networks:

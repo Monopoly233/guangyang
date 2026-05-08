@@ -30,9 +30,11 @@ docker compose --env-file env.prod -f docker-compose.prod.yml up -d --build
 - `wechatpay/`（证书与密钥目录，建议只放在服务器，不要提交到仓库）
 
 Compose 会把运行时数据持久化在本机：
-- `/opt/app/gy/tmp`：上传文件和比对结果，下载不再跳 OSS 外链
-- `/opt/app/gy/redis`：Redis AOF 数据
-- `/opt/app/gy/wechatpay/cert`：微信支付证书/私钥
+- `${GY_DATA_DIR:-./runtime}/tmp`：上传文件和比对结果，下载不再跳 OSS 外链
+- `${GY_DATA_DIR:-./runtime}/redis`：Redis AOF 数据
+- `${GY_DATA_DIR:-./runtime}/wechatpay/cert`：微信支付证书/私钥
+
+GitLab CI 默认会把 `GY_DATA_DIR` 设为 `$CI_PROJECT_DIR/runtime`，不需要 runner 用户拥有 `/opt` 写权限。如果你已经给 runner 用户授权，也可以在 CI/CD Variables 里把 `GY_DATA_DIR` 改成 `/opt/app/gy`。
 
 然后执行：
 

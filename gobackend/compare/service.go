@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gobackend/domain"
@@ -33,17 +35,77 @@ type Service struct {
 	oss      *ossstore.Store
 }
 
+var tempCleanupOnce sync.Once
+
 func NewService(st store.CompareJobStore, q streamq.CompareQueue, tmpRoot string, oss *ossstore.Store) *Service {
 	maxInflight := readEnvIntDefault("COMPARE_MAX_INFLIGHT", 4)
 	if maxInflight <= 0 {
 		maxInflight = 1
 	}
+	startTempCleanup(tmpRoot)
 	return &Service{
 		store:    st,
 		queue:    q,
 		tmpRoot:  tmpRoot,
 		inflight: make(chan struct{}, maxInflight),
 		oss:      oss,
+	}
+}
+
+func startTempCleanup(tmpRoot string) {
+	tempCleanupOnce.Do(func() {
+		tmpRoot = strings.TrimSpace(tmpRoot)
+		if tmpRoot == "" {
+			tmpRoot = "./tmp"
+		}
+		retention := time.Duration(readEnvIntDefault("COMPARE_TMP_RETENTION_MINUTES", 30)) * time.Minute
+		interval := time.Duration(readEnvIntDefault("COMPARE_TMP_CLEANUP_INTERVAL_MINUTES", 5)) * time.Minute
+		if interval > retention/2 && retention >= 2*time.Minute {
+			interval = retention / 2
+		}
+		if interval < time.Minute {
+			interval = time.Minute
+		}
+		jobsRoot := filepath.Join(tmpRoot, "compare_jobs")
+		log.Printf("compare temp cleanup enabled root=%s retention=%s interval=%s", jobsRoot, retention, interval)
+		go func() {
+			cleanupExpiredTempDirs(jobsRoot, retention)
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				cleanupExpiredTempDirs(jobsRoot, retention)
+			}
+		}()
+	})
+}
+
+func cleanupExpiredTempDirs(jobsRoot string, retention time.Duration) {
+	entries, err := os.ReadDir(jobsRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("compare temp cleanup: read %s failed: %v", jobsRoot, err)
+		}
+		return
+	}
+	cutoff := time.Now().Add(-retention)
+	for _, entry := range entries {
+		if entry == nil || !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("compare temp cleanup: stat %s failed: %v", entry.Name(), err)
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		path := filepath.Join(jobsRoot, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("compare temp cleanup: remove %s failed: %v", path, err)
+			continue
+		}
+		log.Printf("compare temp cleanup: removed %s", path)
 	}
 }
 
