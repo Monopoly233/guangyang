@@ -52,8 +52,8 @@ services:
       - XLSCONVERT_PORT=2003
       - XLSCONVERT_PROTOCOL=http
       - XLSCONVERT_TIMEOUT_SECONDS=${XLSCONVERT_TIMEOUT_SECONDS:-90}
-      # OSS 默认关闭：单机部署使用 /app/tmp 共享卷保存上传与结果文件
-      - OSS_BUCKET=${OSS_BUCKET:-}
+      # 单机部署强制关闭 OSS，避免 GitLab 残留 OSS_BUCKET 变量触发云存储初始化。
+      - OSS_BUCKET=
       # WeChatPay config (建议用 .env / env.prod 或 CI 变量注入；不要写死在这里)
       - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
       - WECHAT_MCHID=${WECHAT_MCHID:-}
@@ -101,7 +101,7 @@ services:
       - XLSCONVERT_PORT=2003
       - XLSCONVERT_PROTOCOL=http
       - XLSCONVERT_TIMEOUT_SECONDS=${XLSCONVERT_TIMEOUT_SECONDS:-90}
-      - OSS_BUCKET=${OSS_BUCKET:-}
+      - OSS_BUCKET=
     volumes:
       - ${GY_DATA_DIR:-./runtime}/tmp:/app/tmp
     depends_on:

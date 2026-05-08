@@ -42,7 +42,7 @@ services:
       - XLSCONVERT_HOST=xlsconvert
       - XLSCONVERT_PORT=2003
       - XLSCONVERT_PROTOCOL=http
-      - OSS_BUCKET=${OSS_BUCKET:-}
+      - OSS_BUCKET=
       # WeChatPay config (建议用 .env 或 CI 变量注入；不要写死在这里)
       - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
       - WECHAT_MCHID=${WECHAT_MCHID:-}
@@ -74,7 +74,7 @@ services:
       - XLSCONVERT_HOST=xlsconvert
       - XLSCONVERT_PORT=2003
       - XLSCONVERT_PROTOCOL=http
-      - OSS_BUCKET=${OSS_BUCKET:-}
+      - OSS_BUCKET=
     volumes:
       - ./tmp:/app/tmp
     depends_on:
