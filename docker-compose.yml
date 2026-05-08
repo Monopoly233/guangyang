@@ -1,4 +1,19 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./tmp/redis:/data
+    networks:
+      - appnet
+
+  xlsconvert:
+    image: ghcr.io/unoconv/unoserver-docker:latest
+    expose:
+      - "2003"
+    networks:
+      - appnet
+
   web:
     build:
       context: ./frontend
@@ -17,6 +32,15 @@ services:
     environment:
       - PORT=8080
       - CORS_ALLOW_ORIGIN=*
+      - TMP_ROOT=/app/tmp
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-0}
+      - XLSCONVERT_HOST=xlsconvert
+      - XLSCONVERT_PORT=2003
+      - XLSCONVERT_PROTOCOL=http
+      - OSS_BUCKET=${OSS_BUCKET:-}
       # WeChatPay config (建议用 .env 或 CI 变量注入；不要写死在这里)
       - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
       - WECHAT_MCHID=${WECHAT_MCHID:-}
@@ -26,8 +50,61 @@ services:
       # 证书/密钥目录建议通过挂载或 secrets 注入
       - ./wechatpay:/app/wechatpay:ro
       - ./tmp:/app/tmp
+    depends_on:
+      - redis
+      - xlsconvert
     expose:
       - "8080"
+    networks:
+      - appnet
+
+  compare-worker:
+    build:
+      context: ./gobackend
+      dockerfile: Dockerfile
+    command: ["/app/compare-worker"]
+    environment:
+      - TMP_ROOT=/app/tmp
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-0}
+      - XLSCONVERT_HOST=xlsconvert
+      - XLSCONVERT_PORT=2003
+      - XLSCONVERT_PROTOCOL=http
+      - OSS_BUCKET=${OSS_BUCKET:-}
+    volumes:
+      - ./tmp:/app/tmp
+    depends_on:
+      - redis
+      - xlsconvert
+    networks:
+      - appnet
+
+  payment-worker:
+    build:
+      context: ./gobackend
+      dockerfile: Dockerfile
+    command: ["/app/payment-worker"]
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - COMPARE_JOB_FEE_FEN=${COMPARE_JOB_FEE_FEN:-0}
+      - WECHAT_NOTIFY_URL=${WECHAT_NOTIFY_URL:-}
+      - WECHAT_MCHID=${WECHAT_MCHID:-}
+      - WECHAT_APPID=${WECHAT_APPID:-}
+      - WECHAT_PAY_APPID=${WECHAT_PAY_APPID:-}
+      - WECHAT_CORP_ID=${WECHAT_CORP_ID:-}
+      - WECHAT_API_V3_KEY=${WECHAT_API_V3_KEY:-}
+      - WECHAT_PLATFORM_PUBLIC_KEY_ID=${WECHAT_PLATFORM_PUBLIC_KEY_ID:-}
+      - WECHAT_PLATFORM_PUBLIC_KEY=${WECHAT_PLATFORM_PUBLIC_KEY:-}
+      - WECHAT_MOCK=${WECHAT_MOCK:-}
+      - WECHAT_ALLOW_WW_APPID=${WECHAT_ALLOW_WW_APPID:-}
+    volumes:
+      - ./wechatpay:/app/wechatpay:ro
+    depends_on:
+      - redis
     networks:
       - appnet
 

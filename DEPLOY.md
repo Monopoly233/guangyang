@@ -5,13 +5,16 @@
   - `/`：前端 SPA
   - `/api/`：反代到 Go（`go:8080`）
 - **go**：`gobackend`（包含 `/compare/jobs`、`/wechatpay/notify` 等）
+- **redis**：本机 Compose 内置 Redis，保存任务状态和队列
+- **compare-worker / payment-worker**：本机 worker，消费本机 Redis Streams
+- **xlsconvert**：本机 `unoserver`，只在上传 `.xls` 时转换为 `.xlsx`
 
 ### 2) 本地一键启动（不走 CI）
 
 ```bash
-cp .env.example .env
+cp env.prod.example env.prod
 # 填好 WECHAT_NOTIFY_URL（必须）、以及微信证书/私钥 pem
-docker compose up -d --build
+docker compose --env-file env.prod -f docker-compose.prod.yml up -d --build
 ```
 
 浏览器打开 `http://localhost/`。
@@ -26,6 +29,11 @@ docker compose up -d --build
 - `.env` 或 `env.prod`（环境变量文件：**请自行在服务器上创建，不要提交到 git**；可参考仓库中的 `env.prod.example`）
 - `wechatpay/`（证书与密钥目录，建议只放在服务器，不要提交到仓库）
 
+Compose 会把运行时数据持久化在本机：
+- `/opt/app/gy/tmp`：上传文件和比对结果，下载不再跳 OSS 外链
+- `/opt/app/gy/redis`：Redis AOF 数据
+- `/opt/app/gy/wechatpay/cert`：微信支付证书/私钥
+
 然后执行：
 
 ```bash
@@ -37,17 +45,15 @@ docker compose -f docker-compose.prod.yml up -d
 # docker compose --env-file env.prod -f docker-compose.prod.yml up -d
 ```
 
-### 4) GitLab CI 自动部署
+### 4) GitLab CI 自动部署（回到这台 GitLab 服务器）
 
-CI 文件是根目录的 `.gitlab-ci.yml`，默认只对 `main` 分支触发。
+CI 文件是根目录的 `.gitlab-ci.yml`，默认只对 `main` 分支触发。Runner 需要是这台 GitLab 服务器上的 shell runner，并且能直接执行 `docker`。
 
-在 GitLab 项目里配置 CI/CD 变量（Settings → CI/CD → Variables）：
-- **DEPLOY_HOST**：服务器 IP 或域名
-- **DEPLOY_USER**：服务器用户名
-- **DEPLOY_PATH**：部署目录（如 `/opt/guagnyang`）
-- **DEPLOY_SSH_KEY**：用于部署的私钥（建议创建专用 deploy key）
+流水线现在不再 push ACR，也不再 `kubectl apply` ACK。它会在本机执行：
+- `docker compose -f docker-compose.prod.yml build`
+- `docker compose -f docker-compose.prod.yml up -d --remove-orphans`
 
-以及微信配置（建议用 masked/protected 变量）：
+在 GitLab 项目里配置微信相关 CI/CD 变量（Settings → CI/CD → Variables，建议 masked/protected）：
 - **WECHAT_NOTIFY_URL**：`https://你的域名/wechatpay/notify`（必须，HTTPS 且不可带 query）
   - Nginx 已单独反代 `/wechatpay/` 到 Go，避免被前端 SPA 路由吞掉
   - 也可用 `https://你的域名/api/wechatpay/notify`（通过 `/api/` 反代，路径会在转发时去掉 `/api` 前缀）
@@ -67,47 +73,4 @@ Go 端会从挂载的 `wechatpay/` 目录读取：
 - `wechatpay/cert/platform_cert.pem`
 
 注意：你目前仓库里是 `cert.zip`，需要在服务器上解压/导出成上述 pem 文件名。
-
----
-
-## ACK / Kubernetes 部署：GitLab Variables 注入微信支付文件（推荐）
-
-你现在的 ACK 部署会在 `deploy_ack` 阶段：
-
-- 创建/更新 `gy/wechatpay-env`（短文本环境变量）
-- 创建/更新 `gy/wechatpay-cert`（证书/密钥文件），并挂载到 Go 容器 `/app/wechatpay/cert`
-
-### GitLab Variables 怎么“塞文件”
-
-- **Type=File 不是上传文件**：它是把你粘贴到 Value 的内容在 Job 运行时写成临时文件，变量值是该文件路径。
-- 你如果习惯先把文件做 **base64** 再粘贴到 File 变量，也可以；流水线会尝试自动 `base64 -d` 回原文件（并在注入前做 BEGIN/END 校验，失败会给出明确错误）。
-
-### 建议配置的变量
-
-#### A) 短文本（Type=Variable）
-
-- `WECHAT_NOTIFY_URL`
-- `WECHAT_MCHID`
-- `WECHAT_PAY_APPID`
-- `WECHAT_API_V3_KEY`
-- `WECHAT_PLATFORM_PUBLIC_KEY_ID`（可选）
-- `WECHAT_MOCK`（可选）
-
-#### B) 文件（Type=File）
-
-- `WECHAT_PUB_KEY_PEM_FILE`：平台公钥 `pub_key.pem`（完整 PEM，含 BEGIN/END）
-- `WECHAT_PLATFORM_CERT_PEM_FILE`：平台证书 `platform_cert.pem`（可选，证书模式）
-- `WECHAT_CERT_TXT_FILE`：`cert.txt`（可选，仅排查/兼容）
-
-#### C) 商户证书 zip（二选一）
-
-推荐用 base64 变量（Type=Variable）：
-
-- `WECHAT_MERCHANT_CERT_ZIP_NAME`：`<mchid>_YYYYMMDD_cert.zip`
-- `WECHAT_MERCHANT_CERT_ZIP_B64`：zip 的 base64（单行）
-
-也支持你把 zip 的 base64 粘贴进 File 变量（Type=File）：
-
-- `WECHAT_MERCHANT_CERT_ZIP_FILE`
-- `WECHAT_MERCHANT_CERT_ZIP_NAME`
 

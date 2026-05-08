@@ -145,41 +145,46 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.oss == nil || !s.oss.Enabled() {
-		http.Error(w, "OSS 未启用：无法在 worker 模式下处理上传", http.StatusServiceUnavailable)
-		return
+	var key1, key2 string
+	if s.oss != nil && s.oss.Enabled() {
+		// Upload inputs to OSS for cross-pod workers. Single-host deployments leave
+		// these files on the shared TMP_ROOT volume instead.
+		ctype1 := excelContentTypeByName(file1Name)
+		ctype2 := excelContentTypeByName(file2Name)
+		key1 = s.oss.ObjectKeyForInput(jobID, "file1", file1Name)
+		key2 = s.oss.ObjectKeyForInput(jobID, "file2", file2Name)
+		if err := s.oss.PutFileFromPath(key1, file1Path, ctype1); err != nil {
+			http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := s.oss.PutFileFromPath(key2, file2Path, ctype2); err != nil {
+			http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		// Best-effort cleanup: local inputs are no longer needed after upload.
+		_ = os.Remove(file1Path)
+		_ = os.Remove(file2Path)
+		_ = os.RemoveAll(jobDir)
+		file1Path = ""
+		file2Path = ""
 	}
-	// Upload inputs to OSS for compare-worker
-	ctype1 := excelContentTypeByName(file1Name)
-	ctype2 := excelContentTypeByName(file2Name)
-	key1 := s.oss.ObjectKeyForInput(jobID, "file1", file1Name)
-	key2 := s.oss.ObjectKeyForInput(jobID, "file2", file2Name)
-	if err := s.oss.PutFileFromPath(key1, file1Path, ctype1); err != nil {
-		http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	if err := s.oss.PutFileFromPath(key2, file2Path, ctype2); err != nil {
-		http.Error(w, "上传 OSS 失败: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	// Best-effort cleanup: local inputs are no longer needed.
-	_ = os.Remove(file1Path)
-	_ = os.Remove(file2Path)
-	_ = os.RemoveAll(jobDir)
 
 	job := &domain.CompareJob{
 		ID:          jobID,
 		Status:      domain.CompareJobStatusProcessing,
 		CreatedAt:   time.Now(),
-		File1Path:   "",
-		File2Path:   "",
+		File1Path:   file1Path,
+		File2Path:   file2Path,
 		File1OSSKey: key1,
 		File2OSSKey: key2,
 		File1Name:   file1Name,
 		File2Name:   file2Name,
 		Paid:        false,
 	}
-	_ = s.store.Create(job)
+	if err := s.store.Create(job); err != nil {
+		http.Error(w, "创建任务失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Enqueue background compare in Redis Streams (handled by compare-worker)
 	if s.queue != nil {
@@ -193,6 +198,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "投递任务失败", http.StatusBadGateway)
 			return
 		}
+	} else {
+		go s.runCompareTask(jobID)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -378,7 +385,7 @@ func (s *Service) handleDownloadExport(w http.ResponseWriter, r *http.Request, j
 		}
 		// 支持两种响应：
 		// - format=json：返回 {url, filename} 让前端自行 fetch(预览)/跳转(下载)
-		// - 默认：302 重定向到 OSS 签名链接（适合纯下载）
+		// - 默认：302 重定向到对象存储签名链接（适合显式启用 OSS 的部署）
 		if wantsJSON(r) {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"url":      signed,

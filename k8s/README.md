@@ -1,3 +1,11 @@
+## ACK 部署（历史配置，当前不推荐）
+
+当前生产部署已切回单机 GitLab 服务器，入口是根目录的 `docker-compose.prod.yml` 和 `.gitlab-ci.yml`。本目录保留给以后恢复 ACK/Kubernetes 时参考，不再是默认部署路径。
+
+单机部署现在使用本机 Redis、本机共享磁盘和本机 `xlsconvert`，不再依赖外部 Redis、OSS 签名下载链接或 ACK ALB。
+
+---
+
 ## ACK 部署（投简历版：可观测 + 队列 + Worker 拆分）
 
 本目录把服务拆成 **Go API + compare-worker + payment-worker + web + xlsconvert**，并提供 HPA 与压测模板。

@@ -5,13 +5,16 @@
   - `/`: frontend SPA
   - `/api/`: reverse proxy to Go (`go:8080`)
 - **go**: `gobackend` (includes `/compare/jobs`, `/wechatpay/notify`, etc.)
+- **redis**: local Compose-managed Redis for job state and streams
+- **compare-worker / payment-worker**: local workers consuming local Redis Streams
+- **xlsconvert**: local `unoserver` for `.xls` to `.xlsx` conversion
 
 ### 2) Local one-command run (without CI)
 
 ```bash
-cp .env.example .env
+cp env.prod.example env.prod
 # Fill WECHAT_NOTIFY_URL (required for real pay) and provide WeChat cert/key files.
-docker compose up -d --build
+docker compose --env-file env.prod -f docker-compose.prod.yml up -d --build
 ```
 
 Open `http://localhost/`.
@@ -25,6 +28,11 @@ On the server, prepare a directory (e.g. `/opt/guagnyang`) with:
 - `docker-compose.prod.yml`
 - `.env` or `env.prod` (**create it on the server; do not commit real secrets**; use `env.prod.example` as a template)
 - `wechatpay/` directory (certs/keys; keep it only on the server)
+
+Runtime data is kept on the same server:
+- `/opt/app/gy/tmp`: uploaded files and export results; downloads no longer redirect to OSS
+- `/opt/app/gy/redis`: Redis AOF data
+- `/opt/app/gy/wechatpay/cert`: WeChatPay certs/keys
 
 Start:
 
@@ -41,9 +49,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 The pipeline is defined in `.gitlab-ci.yml` and triggers on the `main` branch.
 
-Configure GitLab CI/CD variables (Settings → CI/CD → Variables):
-- **ACR_USERNAME / ACR_PASSWORD** (to push images)
-- **KUBECONFIG_B64** (base64 kubeconfig for ACK access)
+The runner should be a shell runner on the same GitLab server and must be able to run `docker`.
+
+The pipeline no longer pushes to ACR and no longer runs `kubectl`. It executes locally:
+- `docker compose -f docker-compose.prod.yml build`
+- `docker compose -f docker-compose.prod.yml up -d --remove-orphans`
 
 WeChat config (recommended as masked/protected vars):
 - `WECHAT_NOTIFY_URL` (must be HTTPS, no query string)
@@ -51,9 +61,7 @@ WeChat config (recommended as masked/protected vars):
 
 ### 5) WeChat cert/key material
 
-In ACK deployment, CI creates/updates:
-- `gy/wechatpay-env` (small env vars)
-- `gy/wechatpay-cert` (cert/key files) mounted into containers at `/app/wechatpay/cert`
+For single-host deployment, put cert/key files on the server under `/opt/app/gy/wechatpay/cert`, mounted into containers at `/app/wechatpay/cert`.
 
 Do **not** commit any real keys/certs to git.
 

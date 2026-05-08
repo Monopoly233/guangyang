@@ -1,14 +1,14 @@
 ## 项目概览
 
-这是一套面向生产的 **异步 Excel 比对导出** 服务，重点在于：可扩展的任务队列、对象存储、支付闸门、可观测性与自动扩缩容。
+这是一套面向生产的 **异步 Excel 比对导出** 服务。当前默认部署形态是单机 Docker Compose：本机 Redis、本机共享磁盘、本机 worker 与本机 `xlsconvert`；OSS/ACK 只作为历史或可选扩展。
 
 ### 架构要点
-- **Go API（stateless）**：接收上传，把输入文件写入 OSS，创建 job 元数据（Redis），投递 Redis Streams。
-- **compare-worker（可水平扩容）**：消费 compare stream，从 OSS 拉取输入，必要时调用 `xlsconvert` 做 `.xls→.xlsx`，执行比对并导出结果，再上传 OSS。
+- **Go API**：接收上传，把输入文件写入本机共享 `TMP_ROOT`（启用 OSS 时可写入 OSS），创建 job 元数据（Redis），投递 Redis Streams。
+- **compare-worker**：消费 compare stream，从本机共享目录读取输入（启用 OSS 时从 OSS 拉取），必要时调用 `xlsconvert` 做 `.xls→.xlsx`，执行比对并导出结果。
 - **payment-worker（独立扩容域）**：消费 paygate stream，负责创建微信 Native Pay 订单/推进 job 状态机（把支付逻辑与重计算解耦）。
 - **存储与队列**：
-  - Redis：job 状态一致性（幂等更新） + Streams 队列
-  - OSS：输入/输出文件（结果用签名 URL 直下）
+  - Redis：Compose 内置本机 Redis，负责 job 状态一致性（幂等更新） + Streams 队列
+  - 本机共享磁盘：默认保存输入/输出文件，下载由 Go 直接返回，不再跳 OSS 外链
 - **可靠性设计**：
   - Redis Streams consumer group + pending 自动认领
   - 分布式锁（SETNX+TTL）避免多 worker 重复计算
@@ -100,5 +100,5 @@ Go 服务除基础变量外，还支持微信支付相关配置（建议用 `.en
 ## GitLab CI 自动部署说明
 
 `.gitlab-ci.yml` 在 `main` 分支触发：
-- build/push：构建并推送 `web/go` 镜像到 ACR
-- deploy：`kubectl apply -f k8s/` + 固定使用本次 `IMAGE_TAG` 滚动部署
+- build：在这台 GitLab 服务器上构建本机 `web/go` 镜像
+- deploy：在这台 GitLab 服务器上执行 `docker compose -f docker-compose.prod.yml up -d --remove-orphans`

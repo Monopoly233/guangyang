@@ -95,9 +95,10 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 	}
 
 	ossKey := strings.TrimSpace(job.ResultOSSKey)
-	if ossKey == "" {
+	resultPath := strings.TrimSpace(job.ResultPath)
+	if ossKey == "" && resultPath == "" {
 		// compare stage not finished yet (or failed to persist). Keep pending, will be auto-claimed later.
-		return errors.New("result not ready (ResultOSSKey empty)")
+		return errors.New("result not ready")
 	}
 
 	// If payment already confirmed, release.
@@ -108,7 +109,7 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 			}
 			j.Status = domain.CompareJobStatusReady
 			j.ResultOSSKey = ossKey
-			j.ResultPath = ""
+			j.ResultPath = resultPath
 			j.AmountYuan = 0
 			j.CodeURL = ""
 			j.Error = ""
@@ -129,7 +130,7 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 			}
 			j.Status = domain.CompareJobStatusReady
 			j.ResultOSSKey = ossKey
-			j.ResultPath = ""
+			j.ResultPath = resultPath
 			j.AmountYuan = 0
 			j.CodeURL = ""
 			j.Error = ""
@@ -153,7 +154,7 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 		}
 		j.Status = domain.CompareJobStatusAwaitingPayment
 		j.ResultOSSKey = ossKey
-		j.ResultPath = ""
+		j.ResultPath = resultPath
 		j.AmountYuan = float64(feeFen) / 100.0
 		j.CodeURL = codeURL
 		j.Error = ""
@@ -175,4 +176,3 @@ func (w *Worker) fail(jobID string, err error) error {
 	})
 	return err
 }
-

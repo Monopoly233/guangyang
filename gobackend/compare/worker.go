@@ -133,7 +133,7 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 		return streamq.Terminal(nil)
 	}
 	// If result already exists, only enqueue pay-gate stage (idempotent).
-	if strings.TrimSpace(job.ResultOSSKey) != "" && (job.Status == domain.CompareJobStatusAwaitingPayment || job.Status == domain.CompareJobStatusProcessing) {
+	if hasWorkerResult(job) && (job.Status == domain.CompareJobStatusAwaitingPayment || job.Status == domain.CompareJobStatusProcessing) {
 		if w.payq == nil {
 			return streamq.Terminal(w.fail(jobID, errors.New("paygate queue 未初始化")))
 		}
@@ -145,13 +145,6 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 		}
 		return streamq.Terminal(nil)
 	}
-	if w.oss == nil || !w.oss.Enabled() {
-		return streamq.Terminal(w.fail(jobID, errors.New("OSS 未启用")))
-	}
-	if job.File1OSSKey == "" || job.File2OSSKey == "" {
-		return streamq.Terminal(w.fail(jobID, errors.New("输入文件 OSSKey 为空")))
-	}
-
 	// Mark as processing (best-effort).
 	_, _, _ = w.store.Update(jobID, func(j *domain.CompareJob) {
 		if j.Status == domain.CompareJobStatusCancelled {
@@ -162,20 +155,40 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 	})
 
 	jobDir := filepath.Join(w.tmpRoot, "compare_jobs", jobID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		return streamq.Terminal(w.fail(jobID, fmt.Errorf("创建 jobDir 失败: %w", err)))
-	}
 
-	f1name := safeBaseNameFromName(job.File1Name)
-	f2name := safeBaseNameFromName(job.File2Name)
-	local1 := filepath.Join(jobDir, "file1_"+f1name)
-	local2 := filepath.Join(jobDir, "file2_"+f2name)
-
-	if err := w.oss.GetObjectToFile(job.File1OSSKey, local1); err != nil {
-		return streamq.Terminal(w.fail(jobID, fmt.Errorf("下载输入文件1失败: %w", err)))
-	}
-	if err := w.oss.GetObjectToFile(job.File2OSSKey, local2); err != nil {
-		return streamq.Terminal(w.fail(jobID, fmt.Errorf("下载输入文件2失败: %w", err)))
+	local1 := strings.TrimSpace(job.File1Path)
+	local2 := strings.TrimSpace(job.File2Path)
+	if strings.TrimSpace(job.File1OSSKey) != "" || strings.TrimSpace(job.File2OSSKey) != "" {
+		if w.oss == nil || !w.oss.Enabled() {
+			return streamq.Terminal(w.fail(jobID, errors.New("OSS 未启用")))
+		}
+		if job.File1OSSKey == "" || job.File2OSSKey == "" {
+			return streamq.Terminal(w.fail(jobID, errors.New("输入文件 OSSKey 为空")))
+		}
+		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("创建 jobDir 失败: %w", err)))
+		}
+		f1name := safeBaseNameFromName(job.File1Name)
+		f2name := safeBaseNameFromName(job.File2Name)
+		local1 = filepath.Join(jobDir, "file1_"+f1name)
+		local2 = filepath.Join(jobDir, "file2_"+f2name)
+		if err := w.oss.GetObjectToFile(job.File1OSSKey, local1); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("下载输入文件1失败: %w", err)))
+		}
+		if err := w.oss.GetObjectToFile(job.File2OSSKey, local2); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("下载输入文件2失败: %w", err)))
+		}
+	} else {
+		if local1 == "" || local2 == "" {
+			return streamq.Terminal(w.fail(jobID, errors.New("输入文件本地路径为空")))
+		}
+		if _, err := os.Stat(local1); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("输入文件1不存在: %w", err)))
+		}
+		if _, err := os.Stat(local2); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("输入文件2不存在: %w", err)))
+		}
+		jobDir = filepath.Dir(local1)
 	}
 
 	// .xls -> .xlsx conversion if needed
@@ -194,19 +207,26 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 		return streamq.Terminal(w.fail(jobID, err))
 	}
 
-	ossKey := w.oss.ObjectKeyForJob(jobID)
-	if err := w.oss.PutResultFile(ossKey, resultPath); err != nil {
-		return streamq.Terminal(w.fail(jobID, fmt.Errorf("上传 OSS 失败: %w", err)))
+	ossKey := ""
+	if w.oss != nil && w.oss.Enabled() {
+		ossKey = w.oss.ObjectKeyForJob(jobID)
+		if err := w.oss.PutResultFile(ossKey, resultPath); err != nil {
+			return streamq.Terminal(w.fail(jobID, fmt.Errorf("上传 OSS 失败: %w", err)))
+		}
+		_ = os.Remove(resultPath)
 	}
-	_ = os.Remove(resultPath)
 
 	// Persist result location early.
 	_, _, _ = w.store.Update(jobID, func(j *domain.CompareJob) {
 		if j.Status == domain.CompareJobStatusCancelled {
 			return
 		}
-		j.ResultOSSKey = ossKey
-		j.ResultPath = ""
+		if ossKey != "" {
+			j.ResultOSSKey = ossKey
+			j.ResultPath = ""
+			return
+		}
+		j.ResultPath = resultPath
 	})
 
 	// Refresh job state after generating result (Paid/Cancelled may change concurrently).
@@ -227,6 +247,13 @@ func (w *Worker) Process(ctx context.Context, jobID string) error {
 		return err
 	}
 	return streamq.Terminal(nil)
+}
+
+func hasWorkerResult(job *domain.CompareJob) bool {
+	if job == nil {
+		return false
+	}
+	return strings.TrimSpace(job.ResultOSSKey) != "" || strings.TrimSpace(job.ResultPath) != ""
 }
 
 func (w *Worker) fail(jobID string, err error) error {

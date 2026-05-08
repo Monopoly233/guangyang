@@ -1,14 +1,14 @@
 ## Project overview
 
-This project is a production-oriented **asynchronous Excel diff/export** service. The focus is on a scalable job pipeline, object storage, payment gating, observability, and autoscaling.
+This project is a production-oriented **asynchronous Excel diff/export** service. The default deployment is now single-host Docker Compose: local Redis, local shared disk, local workers, and local `xlsconvert`. OSS/ACK are kept only as historical or optional expansion paths.
 
 ### Architecture highlights
-- **Go API (stateless)**: accepts uploads, stores input files in OSS, persists job metadata in Redis, and enqueues job IDs into Redis Streams.
-- **compare-worker (horizontally scalable)**: consumes the compare stream, downloads inputs from OSS, converts `.xls→.xlsx` via `xlsconvert` when needed, generates the diff/export, and uploads results back to OSS.
+- **Go API**: accepts uploads, stores input files under shared local `TMP_ROOT` (or OSS when explicitly enabled), persists job metadata in Redis, and enqueues job IDs into Redis Streams.
+- **compare-worker**: consumes the compare stream, reads inputs from the shared local directory (or OSS when explicitly enabled), converts `.xls→.xlsx` via `xlsconvert` when needed, and generates the diff/export.
 - **payment-worker (separate scaling domain)**: consumes the paygate stream and drives the payment state machine (WeChat Native Pay order creation / status transitions) to keep payment logic decoupled from heavy compute.
 - **Storage & queue**
-  - Redis: consistent job state (idempotent updates) + Streams queue
-  - OSS: input/output files (exports are downloaded via signed URLs)
+  - Redis: Compose-managed local Redis for consistent job state (idempotent updates) + Streams queue
+  - Local shared disk: default input/output storage; downloads are served by Go, not redirected to OSS signed URLs
 - **Reliability**
   - Redis Streams consumer groups + pending auto-claim
   - Distributed lock (SETNX + TTL) to prevent duplicate computation across worker replicas
@@ -93,9 +93,9 @@ In production the frontend uses same-origin reverse proxy (see `frontend/nginx.c
 
 ---
 
-## CI/CD (GitLab → ACK)
+## CI/CD (GitLab single host)
 
 `.gitlab-ci.yml` runs on the `main` branch:
-- build/push: builds and pushes `web/go` images to ACR
-- deploy: `kubectl apply -f k8s/` and rolls out deployments using the current `IMAGE_TAG`
+- build: builds local `web/go` images on this GitLab server
+- deploy: runs `docker compose -f docker-compose.prod.yml up -d --remove-orphans` on this GitLab server
 
