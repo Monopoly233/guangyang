@@ -38,7 +38,7 @@
 | 数据存储 | 无（用完即走）|
 | 容器化 | Docker, Docker Compose |
 | 编排 | Kubernetes（自建） |
-| CI/CD | GitLab CI + 自建 ARC runners |
+| CI/CD | GitLab CI + 阿里云ARC runners |
 | 性能验证 | loadtest/ |
 
 ## 部署
